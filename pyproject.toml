@@ -1,0 +1,77 @@
+[project]
+name = "ECO2Edit"
+version = "0.1.0"
+description = "ECO2 File Edit"
+authors = [{ name = "beskep", email = "beskep@naver.com" }]
+dependencies = [
+    "eco @ git+https://github.com/beskep/ECO2",
+    "more-itertools>=10.5.0",
+]
+readme = "README.md"
+requires-python = ">= 3.12"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.rye]
+managed = true
+dev-dependencies = [
+    "types-lxml>=2024.9.16",
+    "ruff>=0.6.7",
+    "pylint>=3.3.0",
+    "mypy>=1.11.2",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/eco2edit"]
+
+[tool.ruff]
+preview = true
+output-format = "concise"
+
+[tool.ruff.format]
+preview = true
+quote-style = "single"
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "ANN",    # flake8-annotations
+    "COM",    # flake8-commas
+    "CPY",    # flake8-copyright
+    "D1",     # pydocstyle: D1*
+    "E1",     # pycodestyle: E1*
+    "E2",     # pycodestyle: E2*
+    "FIX",    # flake8-fixme
+    "INP",    # flake8-no-pep420
+    "ISC001", # flake8-implicit-str-concat: single-line-implicit-string-concatenation
+    "Q",      # flake8-quotes
+    "S101",   # flake8-bandit: assert
+    "TD",     # flake8-todos
+]
+extend-safe-fixes = [
+    "TCH", # flake8-type-checking
+    "EM",  # flake8-errmsg
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.pylint.messages_control]
+confidence = ["HIGH", "CONTROL_FLOW", "INFERENCE"]
+enable = ["bad-inline-option", "useless-suppression"]
+disable = ["R", "C", "c-extension-no-member"]
+
+[tool.mypy]
+disable_error_code = ["import-untyped", "import", "var-annotated"]
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+addopts = ["-v", "--cov=./"]
