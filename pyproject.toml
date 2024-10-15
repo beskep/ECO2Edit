@@ -4,8 +4,10 @@ version = "0.1.0"
 description = "ECO2 File Edit"
 authors = [{ name = "beskep", email = "beskep@naver.com" }]
 dependencies = [
-    "eco @ git+https://github.com/beskep/ECO2",
+    "eco2 @ git+https://github.com/beskep/ECO2",
+    "scipy>=1.14.1",
     "more-itertools>=10.5.0",
+    "pydash>=8.0.3",
 ]
 readme = "README.md"
 requires-python = ">= 3.12"
@@ -61,6 +63,9 @@ extend-safe-fixes = [
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
+
+[tool.ruff.lint.isort]
+required-imports = ["from __future__ import annotations"]
 
 [tool.pylint.messages_control]
 confidence = ["HIGH", "CONTROL_FLOW", "INFERENCE"]
