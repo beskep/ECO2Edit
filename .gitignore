@@ -8,3 +8,7 @@ wheels/
 
 # venv
 .venv
+
+# project
+bin
+*.log
