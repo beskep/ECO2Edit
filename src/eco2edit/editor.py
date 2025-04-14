@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from math import inf
 from typing import TYPE_CHECKING
@@ -11,13 +12,7 @@ if TYPE_CHECKING:
     from lxml.etree._element import _Element
 
 
-def _float(v):
-    try:
-        r = float(v)
-    except (ValueError, TypeError):
-        r = None
-
-    return r
+NOT_FOUND = '__NOT_FOUND__'  # _Element.findtext 기본 값
 
 
 class ElementNotFoundError(ValueError):
@@ -29,6 +24,13 @@ class Area:
     site: float
     building: float
     floor: float
+
+    @classmethod
+    def create(cls, desc: _Element):
+        def f(path):
+            return float(desc.findtext(path, NOT_FOUND).replace(',', ''))
+
+        return cls(site=f('buildm21'), building=f('buildm22'), floor=f('buildm23'))
 
 
 class Eco2Editor(Eco2Xml):
@@ -46,20 +48,17 @@ class Eco2Editor(Eco2Xml):
     )
     INSULATION_U_THRESHOLD = 0.1
 
+    @functools.cached_property
     def area(self):
         desc = next(self.iterfind('tbl_Desc'))
-        return Area(
-            site=float(desc.findtext('buildm21').replace(',', '')),
-            building=float(desc.findtext('buildm22').replace(',', '')),
-            floor=float(desc.findtext('buildm23').replace(',', '')),
-        )
+        return Area.create(desc)
 
     def _surfaces_by_type(self, t: int | str, /):
         if isinstance(t, str):
             t = self.SURFACE_TYPE.index(t)
 
         for e in self.iterfind('tbl_yk'):
-            if int(e.findtext('면형태')) == t:
+            if int(e.findtext('면형태', NOT_FOUND)) == t:
                 yield e
 
     def _layers(self, pcode: str | None):
@@ -72,7 +71,7 @@ class Eco2Editor(Eco2Xml):
 
         if not (layers := list(self._layers(pcode))):
             msg = (
-                f'벽체 "{wall.findtext('code')}({wall.findtext('설명')})"에 속한 '
+                f'벽체 "{wall.findtext("code")}({wall.findtext("설명")})"에 속한 '
                 '`ykdetail`이 존재하지 않음.'
             )
             raise ElementNotFoundError(msg)
@@ -109,14 +108,14 @@ class Eco2Editor(Eco2Xml):
         layers.remove(insulation)
 
         # 변경할 두께 계산, 수정
-        r = [float(e.findtext('열저항')) for e in layers]
+        r = [float(e.findtext('열저항', NOT_FOUND)) for e in layers]
         u0 = insulation.findtext('열전도율')
         assert u0 is not None
         if (d := (1.0 / uvalue - sum(r)) * float(u0)) <= 0:
             msg = (
                 '대상 재료의 두께 계산 결과가 양수가 아닙니다.'
-                f'(벽={wall.findtext('설명')}, '
-                f'재료={insulation.findtext('설명')}, 두께={d})'
+                f'(벽={wall.findtext("설명")}, '
+                f'재료={insulation.findtext("설명")}, 두께={d})'
             )
             raise ValueError(msg)
 
@@ -147,7 +146,7 @@ class Eco2Editor(Eco2Xml):
         next(window.iterfind('창호열관류율')).text = str(uvalue)
 
         # 전체 열관류율 수정
-        if balcony := _float(window.findtext('발코니창호열관류율')):
+        if balcony := float(window.findtext('발코니창호열관류율', NOT_FOUND)):
             # XXX 수식 체크
             t = 1.0 / (1.0 / uvalue + 1.0 / (2.0 * balcony))
             logger.info('창호 전체 열관류율: {} (glazing={})', t, window)
@@ -162,7 +161,7 @@ class Eco2Editor(Eco2Xml):
         next(window.iterfind('일사에너지투과율')).text = str(shgc)
 
         # 전체 투과율 수정
-        balcony = _float(window.findtext('발코니투과율'))
+        balcony = float(window.findtext('발코니투과율', NOT_FOUND))
         total = f'{balcony * shgc:.4f}' if balcony else str(shgc)
         next(window.iterfind('투과율')).text = total
 
@@ -172,7 +171,7 @@ class Eco2Editor(Eco2Xml):
         assert pcode is not None
         for e in self.iterfind('tbl_myoun'):
             if e.findtext('열관류율2') == pcode:
-                e.find('투과율').text = total
+                e.find('투과율').text = total  # type: ignore[union-attr]
 
     def set_windows(
         self,

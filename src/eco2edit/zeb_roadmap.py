@@ -19,7 +19,7 @@ from eco2edit.console import Progress
 from eco2edit.editor import Eco2Editor
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Iterable
+    from collections.abc import Iterable, Iterator
 
     from lxml.etree._element import _Element
 
@@ -42,7 +42,7 @@ class Sample:
     _: dc.KW_ONLY
 
     precision: int = 3
-    ranges: dict[str, Collection[float]]
+    ranges: dict[str, list[float]]
     COOLING_CONTROL_TYPES: ClassVar[tuple[str, str]] = ('on/off제어', '회전수제어')
 
     @classmethod
@@ -111,7 +111,7 @@ class Sampler:
             scramble=True,
             strength=1,
             optimization='random-cd',
-            seed=42,
+            rng=42,
         )
     )
     ranges: dict = dc.field(default_factory=_read_ranges)
@@ -120,7 +120,7 @@ class Sampler:
         self,
         region: Literal['중부2', '남부'],
         scale: Literal['소규모', '중소규모'],
-    ):
+    ) -> Iterator[tuple[str, list[float]]]:
         for k, v in self.ranges.items():
             if k in {'외벽', '지붕', '바닥'}:
                 yield k, v[region]
@@ -162,7 +162,7 @@ class Editor(Eco2Editor):
         self.usage = m.group(1)
         self.region = m.group(2)
         self.scale = (
-            '소규모' if self.area().floor < self.FLOOR_AREA_THRESHOLD else '중대규모'
+            '소규모' if self.area.floor < self.FLOOR_AREA_THRESHOLD else '중대규모'
         )
         self.log_excluded = log_excluded
 
@@ -310,8 +310,6 @@ class Editor(Eco2Editor):
             next(e.iterfind('제어방식')).text = control
 
     def _edit(self, variable: str, value: float):
-        area = self.area()
-
         match variable:
             case '외벽' | '지붕' | '바닥':
                 surface = {
@@ -329,7 +327,7 @@ class Editor(Eco2Editor):
             case '냉방설비제어':
                 self._edit_cooling_control(value)
             case 'PV.모듈면적':
-                self.set_pv(area=round(area.building * value, 3))
+                self.set_pv(area=round(self.area.building * value, 3))
             case 'PV.모듈효율':
                 self.set_pv(efficiency=value)
             case _:
@@ -386,19 +384,13 @@ class BatchEditor:
 
                 yield src, dst, editor, sample
 
-    def _track_case(self):
-        with Progress() as p:
-            yield from p.track(
-                self.iter_case(),
-                total=length_hint(self.input_) * self.n,
-            )
-
     def execute(self):
         total = length_hint(self.input_) * self.n
         t = len(str(total))
+        it = Progress.iter(self.iter_case(), total=total)
 
         variables = []
-        for idx, (src, dst, editor, sample) in enumerate(self._track_case()):
+        for idx, (src, dst, editor, sample) in enumerate(it):
             xml = dst / f'{idx:0{t}d}_{src.stem}.xml'
             variables.append(
                 {'source': src.name, 'destination': xml.name} | sample.vars()
@@ -410,7 +402,7 @@ class BatchEditor:
                     header=src.with_suffix('.header'),
                     xml=xml,
                     sftype='10',
-                    dsr=False,
+                    write_dsr=False,
                 )
 
         self.output.joinpath('[variable].json').write_text(
@@ -421,9 +413,9 @@ class BatchEditor:
 if __name__ == '__main__':
     from cyclopts import App
 
-    from eco2edit.console import set_logger
+    from eco2edit.console import LogHandler
 
-    set_logger(20)
+    LogHandler.set()
     app = App()
 
     @app.command
@@ -436,8 +428,8 @@ if __name__ == '__main__':
         output = output or input_ / 'samples'
         output.mkdir(exist_ok=True)
 
-        _ext = {f'.{x}' for x in ext}
-        source = tuple(x for x in input_.glob('*') if x.suffix.lower() in _ext)
+        dotext = {f'.{x}' for x in ext}
+        source = tuple(x for x in input_.glob('*') if x.suffix.lower() in dotext)
         BatchEditor(input_=source, output=output, n=n).execute()
 
     app()
