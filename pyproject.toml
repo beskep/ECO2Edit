@@ -3,27 +3,21 @@ name = "ECO2Edit"
 version = "0.1.0"
 description = "ECO2 File Edit"
 authors = [{ name = "beskep", email = "beskep@naver.com" }]
-dependencies = [
-    "eco2 @ git+https://github.com/beskep/ECO2",
-    "scipy>=1.14.1",
-    "more-itertools>=10.5.0",
-    "pydash>=8.0.3",
-]
 readme = "README.md"
 requires-python = ">= 3.12"
+dependencies = [
+    "eco2 @ git+https://github.com/beskep/ECO2",
+    "more-itertools>=10.6.0",
+    "pydash>=8.0.5",
+    "scipy>=1.15.2",
+]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.rye]
-managed = true
-dev-dependencies = [
-    "types-lxml>=2024.9.16",
-    "ruff>=0.6.7",
-    "pylint>=3.3.0",
-    "mypy>=1.11.2",
-]
+[dependency-groups]
+dev = ["mypy>=1.15.0", "pylint>=3.3.6", "ruff>=0.11.5", "types-lxml>=2025.3.30"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -43,22 +37,21 @@ docstring-code-format = true
 [tool.ruff.lint]
 select = ["ALL"]
 ignore = [
-    "ANN",    # flake8-annotations
-    "COM",    # flake8-commas
-    "CPY",    # flake8-copyright
-    "D1",     # pydocstyle: D1*
-    "E1",     # pycodestyle: E1*
-    "E2",     # pycodestyle: E2*
-    "FIX",    # flake8-fixme
-    "INP",    # flake8-no-pep420
-    "ISC001", # flake8-implicit-str-concat: single-line-implicit-string-concatenation
-    "Q",      # flake8-quotes
-    "S101",   # flake8-bandit: assert
-    "TD",     # flake8-todos
+    "ANN",  # flake8-annotations
+    "COM",  # flake8-commas
+    "CPY",  # flake8-copyright
+    "D1",   # pydocstyle: D1*
+    "E1",   # pycodestyle: E1*
+    "E2",   # pycodestyle: E2*
+    "FIX",  # flake8-fixme
+    "INP",  # flake8-no-pep420
+    "Q",    # flake8-quotes
+    "S101", # flake8-bandit: assert
+    "TD",   # flake8-todos
 ]
 extend-safe-fixes = [
-    "TCH", # flake8-type-checking
-    "EM",  # flake8-errmsg
+    "TC", # flake8-type-checking
+    "EM", # flake8-errmsg
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -77,6 +70,3 @@ disable_error_code = ["import-untyped", "import", "var-annotated"]
 check_untyped_defs = true
 warn_unused_ignores = true
 warn_unused_configs = true
-
-[tool.pytest.ini_options]
-addopts = ["-v", "--cov=./"]
