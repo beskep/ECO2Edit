@@ -5,11 +5,11 @@ from dataclasses import dataclass
 from math import inf
 from typing import TYPE_CHECKING
 
-from eco.eco2xml import Eco2Xml
+from eco2.eco2xml import Eco2Xml
 from loguru import logger
 
 if TYPE_CHECKING:
-    from lxml.etree._element import _Element
+    from lxml.etree import _Element
 
 
 NOT_FOUND = '__NOT_FOUND__'  # _Element.findtext 기본 값

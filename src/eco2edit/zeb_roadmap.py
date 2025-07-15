@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses as dc
+import io
 import json
 import re
 from functools import cached_property
 from operator import length_hint
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import IO, TYPE_CHECKING, ClassVar, Literal
 
 import more_itertools as mi
 import pydash as pyd
-from eco import Eco2
+from eco2 import Eco2
 from loguru import logger
 from scipy.stats.qmc import LatinHypercube
 
@@ -21,7 +22,7 @@ from eco2edit.editor import Eco2Editor
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
-    from lxml.etree._element import _Element
+    from lxml.etree import _Element
 
 
 @dc.dataclass(frozen=True)
@@ -152,12 +153,17 @@ class Editor(Eco2Editor):
     FLOOR_AREA_THRESHOLD = 3000
     COP_TEMPERATURE_COEF = 0.42
 
-    def __init__(self, path: str | Path, *, log_excluded: int = 10) -> None:
-        path = Path(path)
-        super().__init__(path)
+    def __init__(
+        self,
+        source: str | Path | IO[str],
+        name: str,
+        *,
+        log_excluded: int = 10,
+    ) -> None:
+        super().__init__(source)
 
-        if (m := re.match(r'^(교육|근린|업무)_(중부2|남부).*', path.name)) is None:
-            raise ValueError(path.name)
+        if (m := re.match(r'^(교육|근린|업무)_(중부2|남부).*', name)) is None:
+            raise ValueError(name)
 
         self.usage = m.group(1)
         self.region = m.group(2)
@@ -361,13 +367,8 @@ class BatchEditor:
 
     def iter_case(self):
         for src in self.input_:
-            if src.suffix == '.xml':
-                xml = src
-            else:
-                Eco2.decrypt(src)
-                xml = src.with_suffix('.xml')
-
-            editor = Editor(xml)
+            xml = src if src.suffix == '.xml' else io.StringIO(Eco2.read(src).xml)
+            editor = Editor(xml, name=src.name)
 
             it = self.sampler.sample(
                 n=self.n,
@@ -375,7 +376,7 @@ class BatchEditor:
                 scale=editor.scale,  # type: ignore[arg-type]
             )
             for is_first, _, sample in mi.mark_ends(it):
-                editor = Editor(xml, log_excluded=20 if is_first else 10)
+                editor = Editor(xml, name=src.name, log_excluded=20 if is_first else 10)
                 editor.edit(sample)
 
                 dst = self.output / src.stem if self.subdir else self.output
@@ -398,12 +399,16 @@ class BatchEditor:
             editor.write(xml)
 
             with contextlib.suppress(OSError):
-                Eco2.encrypt(
-                    header=src.with_suffix('.header'),
-                    xml=xml,
-                    sftype='10',
-                    write_dsr=False,
+                data = (
+                    Eco2(
+                        header=src.with_suffix('.header').read_bytes(),
+                        xml=xml.read_text(),
+                    )
+                    .replace_sftype('10')
+                    .drop_dsr()
+                    .encrypt()
                 )
+                xml.with_suffix('.eco').write_bytes(data)
 
         self.output.joinpath('[variable].json').write_text(
             json.dumps(variables, ensure_ascii=False, indent=4), encoding='UTF-8'
