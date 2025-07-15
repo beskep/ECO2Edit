@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import functools
+import io
 from dataclasses import dataclass
 from math import inf
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from eco2.eco2xml import Eco2Xml
+from eco2 import Eco2, Eco2Xml, SFType
 from loguru import logger
 
 if TYPE_CHECKING:
@@ -19,11 +21,16 @@ class ElementNotFoundError(ValueError):
     pass
 
 
-@dataclass
+@dataclass(frozen=True)
 class Area:
     site: float
+    """대지면적"""
+
     building: float
+    """건축면적"""
+
     floor: float
+    """연면적"""
 
     @classmethod
     def create(cls, desc: _Element):
@@ -47,6 +54,20 @@ class Eco2Editor(Eco2Xml):
         '지중벽',
     )
     INSULATION_U_THRESHOLD = 0.1
+
+    def __init__(self, src: str | Path | Eco2):
+        self.eco2 = src if isinstance(src, Eco2) else Eco2.read(src)
+        super().__init__(io.StringIO(self.eco2.xml))
+
+    def write_eco(self, path: str | Path, sftype: SFType = '10'):
+        """`.eco` 파일 저장."""
+        data = (
+            Eco2(header=self.eco2.header, xml=self.tostring())
+            .replace_sftype(sftype)
+            .drop_dsr()
+            .encrypt()
+        )
+        Path(path).write_bytes(data)
 
     @functools.cached_property
     def area(self):
