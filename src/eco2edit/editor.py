@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import functools
-import io
 from dataclasses import dataclass
 from math import inf
-from pathlib import Path
 from typing import TYPE_CHECKING
 
-from eco2 import Eco2, Eco2Xml, SFType
+from eco2 import Eco2, Eco2Xml
 from loguru import logger
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from lxml.etree import _Element
 
 
@@ -40,7 +40,7 @@ class Area:
         return cls(site=f('buildm21'), building=f('buildm22'), floor=f('buildm23'))
 
 
-class Eco2Editor(Eco2Xml):
+class Eco2Editor:
     SURFACE_TYPE = (
         '외벽(벽체)',
         '외벽(지붕)',
@@ -57,33 +57,33 @@ class Eco2Editor(Eco2Xml):
 
     def __init__(self, src: str | Path | Eco2):
         self.eco2 = src if isinstance(src, Eco2) else Eco2.read(src)
-        super().__init__(io.StringIO(self.eco2.xml))
+        self.xml = Eco2Xml.create(self.eco2)
 
-    def write_eco(self, path: str | Path, sftype: SFType = '10'):
-        """`.eco` 파일 저장."""
-        data = (
-            Eco2(header=self.eco2.header, xml=self.tostring())
-            .replace_sftype(sftype)
-            .drop_dsr()
-            .encrypt()
+    def write(self, path: str | Path, *, dsr: bool | None = None):
+        """`.eco`, `.tpl` 파일 저장."""
+        eco2 = Eco2(
+            header=self.eco2.header,
+            ds=self.xml.tostring('DS'),
+            dsr=self.xml.tostring('DSR'),
         )
-        Path(path).write_bytes(data)
+
+        eco2.write(path, dsr=dsr)
 
     @functools.cached_property
     def area(self):
-        desc = next(self.iterfind('tbl_Desc'))
+        desc = next(self.xml.iterfind('tbl_Desc'))
         return Area.create(desc)
 
     def _surfaces_by_type(self, t: int | str, /):
         if isinstance(t, str):
             t = self.SURFACE_TYPE.index(t)
 
-        for e in self.iterfind('tbl_yk'):
+        for e in self.xml.iterfind('tbl_yk'):
             if int(e.findtext('면형태', NOT_FOUND)) == t:
                 yield e
 
     def _layers(self, pcode: str | None):
-        for e in self.iterfind('tbl_ykdetail'):
+        for e in self.xml.iterfind('tbl_ykdetail'):
             if e.findtext('pcode') == pcode:
                 yield e
 
@@ -190,7 +190,7 @@ class Eco2Editor(Eco2Xml):
         # XXX 테스트 필요
         pcode = window.findtext('code')
         assert pcode is not None
-        for e in self.iterfind('tbl_myoun'):
+        for e in self.xml.iterfind('tbl_myoun'):
             if e.findtext('열관류율2') == pcode:
                 e.find('투과율').text = total  # type: ignore[union-attr]
 
@@ -218,12 +218,12 @@ class Eco2Editor(Eco2Xml):
 
     def set_infiltration_rate(self, value: float | str):
         value = str(value)
-        for e in self.iterfind('tbl_zone/침기율'):
+        for e in self.xml.iterfind('tbl_zone/침기율'):
             if e.text is not None:
                 e.text = value
 
     def set_light_density(self, value: float | str):
         value = str(value)
-        for e in self.iterfind('tbl_zone/조명에너지부하율입력치'):
+        for e in self.xml.iterfind('tbl_zone/조명에너지부하율입력치'):
             if e.text is not None:
                 e.text = value

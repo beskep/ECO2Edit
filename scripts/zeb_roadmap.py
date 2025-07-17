@@ -157,12 +157,12 @@ class Editor(Eco2Editor):
 
     def __init__(
         self,
-        source: str | Path | IO[str],
+        src: str | Path | IO[str],
         name: str,
         *,
         log_excluded: int = 10,
     ) -> None:
-        super().__init__(source)
+        super().__init__(src)
 
         if (m := re.match(r'^(교육|근린|업무)_(중부2|남부).*', name)) is None:
             raise ValueError(name)
@@ -216,7 +216,7 @@ class Editor(Eco2Editor):
         return system_type
 
     def iter_heating_system(self):
-        for e in self.iterfind('tbl_nanbangkiki'):
+        for e in self.xml.iterfind('tbl_nanbangkiki'):
             if e.findtext('code') != '0':
                 yield e, self._heating_type(e)
 
@@ -244,12 +244,12 @@ class Editor(Eco2Editor):
         return None
 
     def iter_cooling_system(self):
-        for e in self.iterfind('tbl_nangbangkiki'):
+        for e in self.xml.iterfind('tbl_nangbangkiki'):
             if e.findtext('code') != '0':
                 yield e, self._cooling_type(e)
 
     def iter_heat_recovery_ventilator(self):
-        for e in self.iterfind('tbl_kongjo'):
+        for e in self.xml.iterfind('tbl_kongjo'):
             if e.findtext('열교환기유형') == '전열교환':
                 yield e
 
@@ -260,7 +260,9 @@ class Editor(Eco2Editor):
     ):
         # PV 하나만 설치 가정
         pv = mi.one(
-            e for e in self.iterfind('tbl_new') if e.findtext('기기종류') == '태양광'
+            e
+            for e in self.xml.iterfind('tbl_new')
+            if e.findtext('기기종류') == '태양광'
         )
 
         if area is not None:
@@ -398,19 +400,10 @@ class BatchEditor:
             variables.append(
                 {'source': src.name, 'destination': xml.name} | sample.vars()
             )
-            editor.write(xml)
+            editor.xml.write(xml)
 
             with contextlib.suppress(OSError):
-                data = (
-                    Eco2(
-                        header=src.with_suffix('.header').read_bytes(),
-                        xml=xml.read_text(),
-                    )
-                    .replace_sftype('10')
-                    .drop_dsr()
-                    .encrypt()
-                )
-                xml.with_suffix('.eco').write_bytes(data)
+                editor.write(xml.with_suffix('.eco'))
 
         self.output.joinpath('[variable].json').write_text(
             json.dumps(variables, ensure_ascii=False, indent=4), encoding='UTF-8'
