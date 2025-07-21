@@ -245,7 +245,7 @@ class Eco2Editor:
 
         return self
 
-    def set_light_density(self, value: float | str):
+    def set_lighting_load(self, value: float | str):
         value = str(value)
         for e in self.xml.iterfind('tbl_zone/조명에너지부하율입력치'):
             if e.text is not None:

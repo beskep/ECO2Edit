@@ -333,7 +333,7 @@ class Editor(Eco2Editor):
             case 'SHGC':
                 self.set_windows(uvalue=None, shgc=value)
             case '조명밀도':
-                self.set_light_density(value)
+                self.set_lighting_load(value)
             case '냉방설비제어':
                 self._edit_cooling_control(value)
             case 'PV.모듈면적':
