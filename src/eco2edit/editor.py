@@ -18,7 +18,11 @@ if TYPE_CHECKING:
 NOT_FOUND = '__NOT_FOUND__'  # _Element.findtext 기본 값
 
 
-class ElementNotFoundError(ValueError):
+class EditorError(ValueError):
+    pass
+
+
+class ElementNotFoundError(EditorError):
     pass
 
 
@@ -137,7 +141,7 @@ class Eco2Xml(_Eco2Xml):
                 f'(벽={wall.findtext("설명")}, '
                 f'재료={insulation.findtext("설명")}, 두께={d})'
             )
-            raise ValueError(msg)
+            raise EditorError(msg, insulation)
 
         logger.debug('target={}, d={:.6f}', insulation.findtext('설명'), d)
         next(insulation.iterfind('두께')).text = f'{1000 * d:.2f}'
@@ -217,7 +221,7 @@ class Eco2Editor:
     ):
         if uvalue is None and shgc is None:
             msg = f'{uvalue=}, {shgc=}'
-            raise ValueError(msg)
+            raise EditorError(msg)
 
         if not (windows := list(self.xml.surfaces_by_type(surface_type))):
             raise ElementNotFoundError(surface_type)
