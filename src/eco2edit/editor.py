@@ -80,7 +80,7 @@ class Eco2Xml(_Eco2Xml):
             if e.findtext('pcode') == pcode:
                 yield e
 
-    def set_wall_uvalue(self, wall: _Element, uvalue: float):
+    def find_insulation(self, wall: _Element):
         pcode = wall.findtext('code')
 
         if not (layers := list(self.layers(pcode))):
@@ -90,8 +90,8 @@ class Eco2Xml(_Eco2Xml):
             )
             raise ElementNotFoundError(msg)
 
-        # u-value를 맞추기 위해 열전도율이 낮고 두꺼운 단열재 선택
-        # TODO 열전도율순으로 trial and error
+        # u-value를 맞추기 위해 열저항이 큰 단열재 선택
+        # NOTE 에러 발생 시 열전도율순으로 trial and error 방식으로 변경
         possible_insulations = [
             e
             for e in layers
@@ -101,6 +101,7 @@ class Eco2Xml(_Eco2Xml):
             insulation = max(
                 possible_insulations,
                 key=lambda e: (
+                    float(e.findtext('열저항') or -inf),
                     float(e.findtext('두께') or -inf),
                     -float(e.findtext('열전도율') or inf),
                 ),
@@ -120,6 +121,11 @@ class Eco2Xml(_Eco2Xml):
             )
 
         layers.remove(insulation)
+
+        return insulation, layers
+
+    def set_wall_uvalue(self, wall: _Element, uvalue: float):
+        insulation, layers = self.find_insulation(wall)
 
         # 변경할 두께 계산, 수정
         r = [float(e.findtext('열저항', NOT_FOUND)) for e in layers]
