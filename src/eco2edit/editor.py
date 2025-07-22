@@ -3,8 +3,9 @@ from __future__ import annotations
 import dataclasses as dc
 import functools
 from math import inf
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
+import more_itertools as mi
 from eco2 import Eco2
 from eco2 import Eco2Xml as _Eco2Xml
 from loguru import logger
@@ -26,6 +27,15 @@ class ElementNotFoundError(EditorError):
     pass
 
 
+def set_child_text(element: _Element, child: str, value: Any):
+    c = mi.one(
+        element.iterfind(child),
+        too_short=ValueError(f'Child "{child}" not found in {element}'),
+        too_long=ValueError(f'Child "{child}" found more than once in {element}'),
+    )
+    c.text = str(value)
+
+
 @dc.dataclass(frozen=True)
 class Area:
     site: float
@@ -37,12 +47,17 @@ class Area:
     floor: float
     """연면적"""
 
+    @staticmethod
+    def _value(element: _Element, path: str):
+        return float(element.findtext(path, NOT_FOUND).replace(',', ''))
+
     @classmethod
     def create(cls, desc: _Element):
-        def f(path):
-            return float(desc.findtext(path, NOT_FOUND).replace(',', ''))
-
-        return cls(site=f('buildm21'), building=f('buildm22'), floor=f('buildm23'))
+        return cls(
+            site=cls._value(desc, 'buildm21'),
+            building=cls._value(desc, 'buildm22'),
+            floor=cls._value(desc, 'buildm23'),
+        )
 
 
 # NOTE 개별 element 수정 함수 등은 Eco2Xml에,
@@ -68,7 +83,10 @@ class Eco2Xml(_Eco2Xml):
 
     @functools.cached_property
     def area(self):
-        desc = next(self.iterfind('tbl_Desc'))
+        if (desc := self.ds.find('tbl_Desc')) is None:
+            msg = f'tbl_Desc not found in {self.ds}'
+            raise ValueError(msg)
+
         return Area.create(desc)
 
     def surfaces_by_type(self, t: int | str, /):
@@ -144,18 +162,18 @@ class Eco2Xml(_Eco2Xml):
             raise EditorError(msg, insulation)
 
         logger.debug('target={}, d={:.6f}', insulation.findtext('설명'), d)
-        next(insulation.iterfind('두께')).text = f'{1000 * d:.2f}'
+        set_child_text(insulation, '두께', f'{1000 * d:.2f}')
 
         # tbl_yk 열관류율 수정
-        next(wall.iterfind('열관류율')).text = str(uvalue)
+        set_child_text(wall, '열관류율', uvalue)
 
     @staticmethod
     def set_window_uvalue(window: _Element, uvalue: float):
         # 창호열관류율 수정
-        next(window.iterfind('창호열관류율')).text = str(uvalue)
+        set_child_text(window, '창호열관류율', uvalue)
 
         # 전체 열관류율 수정
-        if balcony := float(window.findtext('발코니창호열관류율', NOT_FOUND)):
+        if balcony := float(window.findtext('발코니창호열관류율') or 0):
             # XXX 수식 체크
             t = 1.0 / (1.0 / uvalue + 1.0 / (2.0 * balcony))
             logger.info('창호 전체 열관류율: {} (glazing={})', t, window)
@@ -163,16 +181,16 @@ class Eco2Xml(_Eco2Xml):
         else:
             total = str(uvalue)
 
-        next(window.iterfind('열관류율')).text = total
+        set_child_text(window, '열관류율', total)
 
     def set_window_shgc(self, window: _Element, shgc: float):
         # 일사에너지투과율 수정
-        next(window.iterfind('일사에너지투과율')).text = str(shgc)
+        set_child_text(window, '일사에너지투과율', shgc)
 
         # 전체 투과율 수정
         balcony = float(window.findtext('발코니투과율', NOT_FOUND))
         total = f'{balcony * shgc:.4f}' if balcony else str(shgc)
-        next(window.iterfind('투과율')).text = total
+        set_child_text(window, '투과율', total)
 
         # tbl_myoun 투과율 수정
         # XXX 테스트 필요
@@ -180,7 +198,7 @@ class Eco2Xml(_Eco2Xml):
         assert pcode is not None
         for e in self.iterfind('tbl_myoun'):
             if e.findtext('열관류율2') == pcode:
-                e.find('투과율').text = total  # type: ignore[union-attr]
+                set_child_text(e, '투과율', total)
 
 
 class Eco2Editor:
