@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses as dc
 import functools
 from math import inf
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import more_itertools as mi
 from eco2 import Eco2
@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
     from lxml.etree import _Element
 
+Level = Literal['debug', 'info', 'warning', 'error', 'raise']
 
 NOT_FOUND = '__NOT_FOUND__'  # _Element.findtext 기본 값
 
@@ -215,12 +216,18 @@ class Eco2Editor:
         )
         eco2.write(path, dsr=dsr)
 
-    def set_walls(self, uvalue: float, surface_type: str = '외벽(벽체)'):
+    def set_walls(
+        self,
+        uvalue: float,
+        surface_type: str = '외벽(벽체)',
+        *,
+        if_empty: Level = 'debug',
+    ):
         if not (walls := list(self.xml.surfaces_by_type(surface_type))):
-            if surface_type == '외벽(바닥)':
-                logger.warning('`외벽(바닥)`이 존재하지 않음.')
-            else:
+            if if_empty == 'raise':
                 raise ElementNotFoundError(surface_type)
+
+            logger.log(if_empty.upper(), '`{}`이 존재하지 않음.', surface_type)
 
         for w in walls:
             if w.findtext('code') == '0':
@@ -236,13 +243,18 @@ class Eco2Editor:
         uvalue: float | None = None,
         shgc: float | None = None,
         surface_type: str = '외부창',
+        *,
+        if_empty: Level = 'debug',
     ):
         if uvalue is None and shgc is None:
             msg = f'{uvalue=}, {shgc=}'
             raise EditorError(msg)
 
         if not (windows := list(self.xml.surfaces_by_type(surface_type))):
-            raise ElementNotFoundError(surface_type)
+            if if_empty == 'raise':
+                raise ElementNotFoundError(surface_type)
+
+            logger.log(if_empty.upper(), '`{}`이 존재하지 않음.', surface_type)
 
         for w in windows:
             if w.findtext('code') == '0' and w.findtext('열관류율') == 0:
