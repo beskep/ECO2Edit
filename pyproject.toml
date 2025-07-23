@@ -8,22 +8,17 @@ requires-python = ">= 3.12"
 dependencies = [
     "eco2 @ git+https://github.com/beskep/ECO2",
     "more-itertools>=10.6.0",
+    "polars>=1.31.0",
     "pydash>=8.0.5",
     "scipy>=1.15.2",
 ]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
 [dependency-groups]
-dev = ["mypy>=1.15.0", "pylint>=3.3.6", "ruff>=0.11.5", "types-lxml>=2025.3.30"]
+dev = ["mypy>=1.15.0", "ruff>=0.11.5", "types-lxml>=2025.3.30"]
 
-[tool.hatch.metadata]
-allow-direct-references = true
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/eco2edit"]
+[build-system]
+requires = ["uv_build>=0.8.0,<0.9"]
+build-backend = "uv_build"
 
 [tool.ruff]
 preview = true
