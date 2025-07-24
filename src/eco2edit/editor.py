@@ -184,9 +184,21 @@ class Eco2Xml(_Eco2Xml):
 
         set_child_text(window, '열관류율', total)
 
-    def set_window_shgc(self, window: _Element, shgc: float):
+    def set_window_shgc(
+        self,
+        window: _Element,
+        shgc: float,
+        *,
+        update_zero: bool = False,
+    ):
+        path = '일사에너지투과율'
+
+        if not update_zero and (float(window.findtext(path, NOT_FOUND)) == 0):
+            # '외부창'의 원래 SHGC가 0인 경우 (투과율 없는 문) 값을 수정하지 않음.
+            return
+
         # 일사에너지투과율 수정
-        set_child_text(window, '일사에너지투과율', shgc)
+        set_child_text(window, path, shgc)
 
         # 전체 투과율 수정
         balcony = float(window.findtext('발코니투과율', NOT_FOUND))
@@ -244,6 +256,7 @@ class Eco2Editor:
         shgc: float | None = None,
         surface_type: str = '외부창',
         *,
+        update_zero_shgc: bool = False,
         if_empty: Level = 'debug',
     ):
         if uvalue is None and shgc is None:
@@ -263,7 +276,9 @@ class Eco2Editor:
             if uvalue is not None:
                 self.xml.set_window_uvalue(window=w, uvalue=uvalue)
             if shgc is not None:
-                self.xml.set_window_shgc(window=w, shgc=shgc)
+                self.xml.set_window_shgc(
+                    window=w, shgc=shgc, update_zero=update_zero_shgc
+                )
 
         return self
 
