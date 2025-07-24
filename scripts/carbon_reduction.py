@@ -31,7 +31,7 @@ CoolingType = Literal['EHP', 'GHP', '흡수식']
 EnergySource = Literal['전기', 'LNG', 'LPG', '난방유', '지역난방']
 
 
-PV_TEMPLATE = """
+PV = """
 <tbl_new>
     <code>0</code>
     <설명>PV</설명>
@@ -109,7 +109,6 @@ class HeatingSystem:
         args: tuple[HeatingType, EnergySource]
 
         match data:
-            # TODO 검토
             case '히트펌프', '전기':
                 args = ('EHP', '전기')
             case '히트펌프', s:
@@ -143,11 +142,10 @@ class CoolingSystem:
         args: tuple[CoolingType, EnergySource]
 
         match data:
-            # TODO 검토
             case '압축식', _:
                 args = ('EHP', '전기')
             case '압축식(LNG)', _:
-                args = 'GHP', 'LNG'
+                args = ('GHP', 'LNG')
             case '흡수식', '외부연결':
                 args = ('흡수식', '지역난방')
             case '흡수식', '직화식':
@@ -389,7 +387,7 @@ class Editor(Eco2Editor):
                 self.xml.ds.remove(element)
 
         # 새 PV 적용
-        pv = etree.fromstring(PV_TEMPLATE)
+        pv = etree.fromstring(PV)
         set_child_text(pv, '태양광모듈면적', self._pv_area())  # TODO 면적 케이스 세팅
 
         last_renewable = mi.last(self.xml.ds.iterfind('tbl_new'))
