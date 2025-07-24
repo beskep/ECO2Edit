@@ -7,6 +7,7 @@ import functools
 import itertools
 import re
 import shutil
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
 
@@ -68,9 +69,6 @@ PV_TEMPLATE = """
     <지열비고 />
     <열병합신재생여부>false</열병합신재생여부>
     <태양광용량>0</태양광용량>
-    <수열_수열원>하천수</수열_수열원>
-    <수열_열교환기설치여부>예</수열_열교환기설치여부>
-    <수열_수열팽창탱크설치여부>예</수열_수열팽창탱크설치여부>
 </tbl_new>
 """
 
@@ -363,6 +361,16 @@ class Editor(Eco2Editor):
         ratio = float(self._value(self.part == '최대 태양광 모듈면적비'))
         return round(self.xml.area.building * ratio, 2)
 
+    def _sort_renewable(self):
+        for idx, element in enumerate(self.xml.ds.iterfind('tbl_new')):
+            prev = element.findtext('code')
+            assert prev is not None
+
+            next_ = '0' if idx == 0 else f'{idx:04d}'
+            set_child_text(element, 'code', next_)
+
+            yield prev, next_
+
     def edit_pv(self):
         # 기존 PV 삭제
         for element in self.xml.iterfind('tbl_new'):
@@ -378,9 +386,21 @@ class Editor(Eco2Editor):
 
         self.xml.ds.insert(index, pv)
 
-        # code 정렬
-        for idx, element in enumerate(self.xml.ds.iterfind('tbl_new')):
-            set_child_text(element, 'code', '0' if idx == 0 else f'{idx:04d}')
+        # code 순서에 따라 정렬
+        codes = dict(self._sort_renewable())
+
+        # 냉난방기기 '연결된시스템' 새 code로 변경
+        for equipment in mi.flatten([
+            self.xml.iterfind('tbl_nanbangkiki'),
+            self.xml.iterfind('tbl_nangbangkiki'),
+        ]):
+            prev = equipment.findtext('연결된시스템')
+            assert prev is not None
+
+            if prev == '0':
+                continue
+
+            set_child_text(equipment, '연결된시스템', codes[prev])
 
 
 app = cyclopts.App(
@@ -509,4 +529,9 @@ def edit(editor: BatchEditor):
 
 
 if __name__ == '__main__':
+    logger.remove()
+    logger.add(sys.stdout, level='INFO')
+
+    # TODO 재료 두께 음수 문제
+
     app()
