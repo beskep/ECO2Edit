@@ -248,7 +248,11 @@ class Editor(Eco2Editor):
         shgc = float(self._value((self.category == 'SHGC') & (self.part == '외부창')))
         self.set_windows(uvalue=window_uvalue, shgc=shgc)
 
-    def _edit_heating_equipment(self, element: _Element):
+    def _edit_heating_equipment(
+        self,
+        element: _Element,
+        boiler_control_threshold: float = 100,
+    ):
         heating = HeatingSystem.create(element)
 
         # 효율
@@ -279,9 +283,16 @@ class Editor(Eco2Editor):
                 raise EditorError(heating)
 
         # 펌프제어
-        if heating.type == '지역난방':
+        if (
+            heating.type == '지역난방'  # fmt
+            or (
+                heating.type == '보일러'
+                and float(element.findtext('보일러정격출력', 0))  # kW
+                >= boiler_control_threshold
+            )
+        ):
             control = self._value(
-                (self.category == '난방제어') & (self.part == '지역난방 펌프제어')
+                (self.category == '난방제어') & (self.part == '펌프제어')
             )
             set_child_text(element, '펌프제어유형', control)
 
@@ -531,7 +542,5 @@ def edit(editor: BatchEditor):
 if __name__ == '__main__':
     logger.remove()
     logger.add(sys.stdout, level='INFO')
-
-    # TODO 재료 두께 음수 문제
 
     app()
