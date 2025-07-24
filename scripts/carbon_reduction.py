@@ -162,7 +162,7 @@ class CoolingSystem:
 class Case:
     src: Path
     scale: str
-    region: str
+    region: Region
     grade: Grade
 
     def __str__(self):
@@ -183,11 +183,11 @@ class Editor(Eco2Editor):
         '제주': '170100',
     }
 
-    def __init__(self, case: Case, setting: pl.DataFrame, pv: PVArea):
+    def __init__(self, case: Case, setting: pl.DataFrame, pv: PVArea | float):
         super().__init__(case.src)
         self.case = case
         self.setting = setting
-        self.pv = pv
+        self.pv: PVArea | float = pv
 
         self.category = pl.col('category')
         self.part = pl.col('part')
@@ -388,6 +388,11 @@ class Editor(Eco2Editor):
         self.set_lighting_load(value)
 
     def _pv_area(self):
+        if self.pv == 'zero':
+            return 0
+        if isinstance(self.pv, float | int):
+            return self.pv
+
         # TODO pv area 'required' 일 때 계산
         ratio = float(self._value(self.part == '최대 태양광 모듈면적비'))
         return round(self.xml.area.building * ratio, 2)
@@ -408,12 +413,13 @@ class Editor(Eco2Editor):
             if element.findtext('기기종류') == '태양광':
                 self.xml.ds.remove(element)
 
-        if self.pv == 'zero':
+        area = self._pv_area()
+        if self.pv == 'zero' or not area:
             return
 
         # 새 PV 적용
         pv = etree.fromstring(PV)
-        set_child_text(pv, '태양광모듈면적', self._pv_area())
+        set_child_text(pv, '태양광모듈면적', area)
 
         last_renewable = mi.last(self.xml.ds.iterfind('tbl_new'))
         index = self.xml.ds.index(last_renewable) + 1
@@ -492,8 +498,7 @@ def filename(src: Path, dst: Path, *, name: bool = False):
 class BatchEditor:
     src: Path
     dst: Path
-    pv: PVArea
-
+    pv: PVArea | float = 'zero'
     xml: bool = False
 
     @functools.cached_property
@@ -534,34 +539,50 @@ class BatchEditor:
             scale = m.group(2)
             yield Case(src=src, scale=scale, region=region, grade=grade)
 
+    def edit(self, case: Case):
+        setting = self.filter_setting(
+            scale=case.scale, region=case.region, grade=case.grade
+        )
+
+        if not (setting).height:
+            raise ValueError(case)
+
+        editor = Editor(case, setting, self.pv)
+
+        try:
+            editor.edit()
+        except EditorError as e:
+            logger.error(repr(e))
+            raise
+
+        path = self.dst / f'{case}-PV-{self.pv}.tpl'
+        editor.write(path)
+        if self.xml:
+            editor.xml.write(path.with_suffix('.xml'))
+
     def execute(self):
         for case in self.cases():
             logger.info(case)
-
-            setting = self.filter_setting(
-                scale=case.scale, region=case.region, grade=case.grade
-            )
-
-            if not (setting).height:
-                raise ValueError(case)
-
-            editor = Editor(case, setting, self.pv)
-
-            try:
-                editor.edit()
-            except EditorError as e:
-                logger.error(repr(e))
-                raise
-
-            path = self.dst / f'{case}-PV-{self.pv}.tpl'
-            editor.write(path)
-            if self.xml:
-                editor.xml.write(path.with_suffix('.xml'))
+            self.edit(case)
 
 
 @app.command
 def edit(editor: BatchEditor):
+    """ECO2 파일 수정."""
     editor.execute()
+
+
+@app.command
+def pv_area(editor: BatchEditor, *, area: tuple[float, ...] = (0, 10, 20, 100)):
+    """PV 면적 테스트 케이스 생성."""
+    cases = tuple(x for x in editor.cases() if x.grade is None)
+    for case, a in itertools.product(cases, area):
+        logger.info('{} {}', case, a)
+        setting = editor.filter_setting(
+            scale=case.scale, region=case.region, grade=case.grade
+        )
+        path = editor.dst / f'{case}-PV-{a}.tpl'
+        Editor(case=case, setting=setting, pv=a).edit().write(path)
 
 
 if __name__ == '__main__':
