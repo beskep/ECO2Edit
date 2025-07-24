@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 Region = Literal['중부1', '중부2', '남부', '제주']
 Grade = Literal[5, 4, 3, 2, 1, 0] | None  # None -> base, 0 -> ZEB+
+PVArea = Literal['zero', 'max', 'required']
 
 HeatingType = Literal['EHP', 'GHP', '보일러', '지역난방']
 CoolingType = Literal['EHP', 'GHP', '흡수식']
@@ -182,10 +183,11 @@ class Editor(Eco2Editor):
         '제주': '170100',
     }
 
-    def __init__(self, case: Case, setting: pl.DataFrame):
+    def __init__(self, case: Case, setting: pl.DataFrame, pv: PVArea):
         super().__init__(case.src)
         self.case = case
         self.setting = setting
+        self.pv = pv
 
         self.category = pl.col('category')
         self.part = pl.col('part')
@@ -386,6 +388,7 @@ class Editor(Eco2Editor):
         self.set_lighting_load(value)
 
     def _pv_area(self):
+        # TODO pv area 'required' 일 때 계산
         ratio = float(self._value(self.part == '최대 태양광 모듈면적비'))
         return round(self.xml.area.building * ratio, 2)
 
@@ -405,9 +408,12 @@ class Editor(Eco2Editor):
             if element.findtext('기기종류') == '태양광':
                 self.xml.ds.remove(element)
 
+        if self.pv == 'zero':
+            return
+
         # 새 PV 적용
         pv = etree.fromstring(PV)
-        set_child_text(pv, '태양광모듈면적', self._pv_area())  # TODO 면적 케이스 세팅
+        set_child_text(pv, '태양광모듈면적', self._pv_area())
 
         last_renewable = mi.last(self.xml.ds.iterfind('tbl_new'))
         index = self.xml.ds.index(last_renewable) + 1
@@ -486,6 +492,7 @@ def filename(src: Path, dst: Path, *, name: bool = False):
 class BatchEditor:
     src: Path
     dst: Path
+    pv: PVArea
 
     xml: bool = False
 
@@ -538,7 +545,7 @@ class BatchEditor:
             if not (setting).height:
                 raise ValueError(case)
 
-            editor = Editor(case, setting)
+            editor = Editor(case, setting, self.pv)
 
             try:
                 editor.edit()
@@ -546,9 +553,10 @@ class BatchEditor:
                 logger.error(repr(e))
                 raise
 
-            editor.write(self.dst / f'{case}.tpl')
+            path = self.dst / f'{case}-PV-{self.pv}.tpl'
+            editor.write(path)
             if self.xml:
-                editor.xml.write(self.dst / f'{case}.xml')
+                editor.xml.write(path.with_suffix('.xml'))
 
 
 @app.command
