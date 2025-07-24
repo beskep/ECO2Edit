@@ -202,6 +202,17 @@ class Editor(Eco2Editor):
     def _value(self, expr: pl.Expr):
         return self.setting.row(by_predicate=expr)[-1]
 
+    def connected_renewable(self, equipment: _Element):
+        code = equipment.findtext('연결된시스템')
+        assert code is not None
+
+        if code == '0':
+            return None
+
+        return mi.one(
+            e for e in self.xml.ds.iterfind('tbl_new') if e.findtext('code') == code
+        )
+
     def edit(self):
         self.edit_region()
         self.edit_wall_and_window()
@@ -299,6 +310,10 @@ class Editor(Eco2Editor):
             if element.findtext('code') == '0' and element.findtext('설명') == '(없음)':
                 continue
 
+            renewable = self.connected_renewable(element)
+            if renewable is not None and renewable.findtext('기기종류') == '지열':
+                continue
+
             self._edit_heating_equipment(element)
 
     def _edit_cooling_equipment(self, element: _Element):
@@ -342,6 +357,10 @@ class Editor(Eco2Editor):
     def edit_cooling_equipment(self):
         for element in self.xml.iterfind('tbl_nangbangkiki'):
             if element.findtext('code') == '0' and element.findtext('설명') == '(없음)':
+                continue
+
+            renewable = self.connected_renewable(element)
+            if renewable is not None and renewable.findtext('기기종류') == '지열':
                 continue
 
             self._edit_cooling_equipment(element)
@@ -468,7 +487,7 @@ class BatchEditor:
     src: Path
     dst: Path
 
-    xml: bool = True
+    xml: bool = False
 
     @functools.cached_property
     def settings(self):
