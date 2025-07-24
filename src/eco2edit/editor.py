@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import dataclasses as dc
 import functools
-from math import inf
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import more_itertools as mi
 from eco2 import Eco2
 from eco2 import Eco2Xml as _Eco2Xml
 from loguru import logger
+from lxml import etree
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -18,6 +18,20 @@ if TYPE_CHECKING:
 Level = Literal['debug', 'info', 'warning', 'error', 'raise']
 
 NOT_FOUND = '__NOT_FOUND__'  # _Element.findtext 기본 값
+CUSTOM_LAYER = """
+<tbl_ykdetail>
+  <pcode>0000</pcode>
+  <code>0001</code>
+  <설명>CustomMaterial</설명>
+  <열전도율>0</열전도율>
+  <두께>1000</두께>
+  <구분>5</구분>
+  <열저항>0</열저항>
+  <전경색>-16776961</전경색>
+  <후경색>-1</후경색>
+  <커스텀>Y</커스텀>
+</tbl_ykdetail>
+"""
 
 
 class EditorError(ValueError):
@@ -103,69 +117,26 @@ class Eco2Xml(_Eco2Xml):
             if e.findtext('pcode') == pcode:
                 yield e
 
-    def find_insulation(self, wall: _Element):
-        pcode = wall.findtext('code')
-
-        if not (layers := list(self.layers(pcode))):
-            msg = (
-                f'벽체 "{wall.findtext("code")}({wall.findtext("설명")})"에 속한 '
-                '`ykdetail`이 존재하지 않음.'
-            )
-            raise ElementNotFoundError(msg)
-
-        # u-value를 맞추기 위해 열저항이 큰 단열재 선택
-        # NOTE 에러 발생 시 열전도율순으로 trial and error 방식으로 변경
-        possible_insulations = [
-            e
-            for e in layers
-            if float(e.findtext('열전도율') or inf) < self.insulation_u_threshold
-        ]
-        if possible_insulations:
-            insulation = max(
-                possible_insulations,
-                key=lambda e: (
-                    float(e.findtext('열저항') or -inf),
-                    float(e.findtext('두께') or -inf),
-                    -float(e.findtext('열전도율') or inf),
-                ),
-            )
-        else:
-            logger.debug(
-                '단열재 미발견: code={}, 설명={}',
-                wall.findtext('code'),
-                wall.findtext('설명'),
-            )
-            insulation = min(
-                layers,
-                key=lambda e: (
-                    float(e.findtext('열전도율') or inf),
-                    -float(e.findtext('두께') or -inf),
-                ),
-            )
-
-        layers.remove(insulation)
-
-        return insulation, layers
-
     def set_wall_uvalue(self, wall: _Element, uvalue: float):
-        insulation, layers = self.find_insulation(wall)
+        code = wall.findtext('code')
+        assert code is not None
 
-        # 변경할 두께 계산, 수정
-        r = [float(e.findtext('열저항', NOT_FOUND)) for e in layers]
-        u0 = insulation.findtext('열전도율')
-        assert u0 is not None
-        if (d := (1.0 / uvalue - sum(r)) * float(u0)) <= 0:
-            msg = (
-                '대상 재료의 두께 계산 결과가 양수가 아닙니다.'
-                f'(벽={wall.findtext("설명")}, '
-                f'재료={insulation.findtext("설명")}, 두께={d})'
-            )
-            raise EditorError(msg, insulation)
+        # 기존 레이어 삭제
+        for layer in self.iterfind('tbl_ykdetail'):
+            if layer.findtext('pcode') == code:
+                self.ds.remove(layer)
 
-        logger.debug('target={}, d={:.6f}', insulation.findtext('설명'), d)
-        set_child_text(insulation, '두께', f'{1000 * d:.2f}')
+        # 새 레이어 추가
+        layer = etree.fromstring(CUSTOM_LAYER)
+        set_child_text(layer, 'pcode', code)
+        set_child_text(layer, '열전도율', str(uvalue))
+        set_child_text(layer, '열저항', f'{1 / uvalue:.4f}')
 
-        # tbl_yk 열관류율 수정
+        last_layer = mi.last(self.iterfind('tbl_ykdetail'))
+        index = self.ds.index(last_layer) + 1
+        self.ds.insert(index, layer)
+
+        # 벽체 열관류율 수정
         set_child_text(wall, '열관류율', uvalue)
 
     @staticmethod
@@ -175,7 +146,6 @@ class Eco2Xml(_Eco2Xml):
 
         # 전체 열관류율 수정
         if balcony := float(window.findtext('발코니창호열관류율') or 0):
-            # XXX 수식 체크
             t = 1.0 / (1.0 / uvalue + 1.0 / (2.0 * balcony))
             logger.info('창호 전체 열관류율: {} (glazing={})', t, window)
             total = f'{t:.3f}'
@@ -184,9 +154,21 @@ class Eco2Xml(_Eco2Xml):
 
         set_child_text(window, '열관류율', total)
 
-    def set_window_shgc(self, window: _Element, shgc: float):
+    def set_window_shgc(
+        self,
+        window: _Element,
+        shgc: float,
+        *,
+        update_zero: bool = False,
+    ):
+        path = '일사에너지투과율'
+
+        if not update_zero and (float(window.findtext(path, NOT_FOUND)) == 0):
+            # '외부창'의 원래 SHGC가 0인 경우 (투과율 없는 문) 값을 수정하지 않음.
+            return
+
         # 일사에너지투과율 수정
-        set_child_text(window, '일사에너지투과율', shgc)
+        set_child_text(window, path, shgc)
 
         # 전체 투과율 수정
         balcony = float(window.findtext('발코니투과율', NOT_FOUND))
@@ -244,6 +226,7 @@ class Eco2Editor:
         shgc: float | None = None,
         surface_type: str = '외부창',
         *,
+        update_zero_shgc: bool = False,
         if_empty: Level = 'debug',
     ):
         if uvalue is None and shgc is None:
@@ -263,7 +246,9 @@ class Eco2Editor:
             if uvalue is not None:
                 self.xml.set_window_uvalue(window=w, uvalue=uvalue)
             if shgc is not None:
-                self.xml.set_window_shgc(window=w, shgc=shgc)
+                self.xml.set_window_shgc(
+                    window=w, shgc=shgc, update_zero=update_zero_shgc
+                )
 
         return self
 
