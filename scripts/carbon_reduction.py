@@ -336,13 +336,13 @@ class Editor(Eco2Editor):
         # 제어
         match cooling.type:
             case 'EHP' | 'GHP':
+                if (kind := element.findtext('냉동기종류')) != '실내공조시스템':
+                    logger.warning('냉동기종류="{}"', kind)
+                    return
+
                 control = self._value(
                     (self.category == '냉방제어') & (self.part == 'HP')
                 )
-
-                if (kind := element.findtext('냉동기종류')) != '실내공조시스템':
-                    logger.warning('냉동기종류="{}"', kind)
-
                 set_child_text(element, '제어방식', control)
             case '흡수식':
                 control = self._value(
@@ -540,6 +540,11 @@ class BatchEditor:
             yield Case(src=src, scale=scale, region=region, grade=grade)
 
     def edit(self, case: Case):
+        path = self.dst / f'{case}-PV-{self.pv}.tpl'
+
+        if path.exists():
+            return
+
         setting = self.filter_setting(
             scale=case.scale, region=case.region, grade=case.grade
         )
@@ -555,7 +560,6 @@ class BatchEditor:
             logger.error(repr(e))
             raise
 
-        path = self.dst / f'{case}-PV-{self.pv}.tpl'
         editor.write(path)
         if self.xml:
             editor.xml.write(path.with_suffix('.xml'))
