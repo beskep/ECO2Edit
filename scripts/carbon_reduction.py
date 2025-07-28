@@ -17,6 +17,7 @@ import polars as pl
 from loguru import logger
 from lxml import etree
 
+from eco2edit import report
 from eco2edit.editor import Eco2Editor, EditorError, set_child_text
 
 if TYPE_CHECKING:
@@ -170,7 +171,7 @@ class Case:
 
 
 class Editor(Eco2Editor):
-    REGION: ClassVar[dict[str, str]] = {
+    REGION: ClassVar[dict[Region, str]] = {
         '중부1': '춘천',
         '중부2': '서울',
         '남부': '부산',
@@ -181,6 +182,13 @@ class Editor(Eco2Editor):
         '서울': '010100',
         '부산': '020100',
         '제주': '170100',
+    }
+    PV_GEN_PER_AREA: ClassVar[dict[Region, float]] = {
+        # kWh/m²
+        '중부1': 201.983736,
+        '중부2': 197.503394,
+        '남부': 224.25875,
+        '제주': 209.032917,
     }
 
     def __init__(self, case: Case, setting: pl.DataFrame, pv: PVArea | float):
@@ -577,7 +585,7 @@ def edit(editor: BatchEditor):
 
 
 @app.command
-def pv_area(editor: BatchEditor, *, area: tuple[float, ...] = (0, 10, 20, 100)):
+def edit_pv_test(editor: BatchEditor, *, area: tuple[float, ...] = (0, 10, 20, 100)):
     """PV 면적 테스트 케이스 생성."""
     cases = tuple(x for x in editor.cases() if x.grade is None)
     for case, a in itertools.product(cases, area):
@@ -587,6 +595,132 @@ def pv_area(editor: BatchEditor, *, area: tuple[float, ...] = (0, 10, 20, 100)):
         )
         path = editor.dst / f'{case}-PV-{a}.tpl'
         Editor(case=case, setting=setting, pv=a).edit().write(path)
+
+
+@app.command
+def required_pv(
+    src: Path,
+    dst: Path | None,
+    eir: tuple[float, ...] = (0.2, 0.4, 0.6, 0.8, 1.0, 1.2),
+):
+    dst = dst or src.parent
+    cache = dst / f'{src.name}.parquet'
+
+    if cache.exists():
+        raw = pl.read_parquet(cache)
+    else:
+        raw = pl.concat(
+            report.CalculationsReport(x).data.select(
+                pl.lit(x.stem).alias('case'), pl.all()
+            )
+            for x in src.glob('*.xls')
+        )
+        raw.write_parquet(cache)
+        raw.write_excel(cache.with_suffix('.xlsx'), column_widths=100)
+
+    raw = raw.rename({'변수': 'variable', '합계': 'value'})
+
+    # 보정면적 계산 (단위면적당 전력 생산량 계산용)
+    consumption_index = {49: '난방', 57: '냉방', 64: '급탕', 67: '조명', 70: '환기'}
+    consumption = raw.filter(pl.col('index').is_in(tuple(consumption_index.keys())))
+    if not (consumption['variable'] == '전력 소요량').all():
+        raise ValueError(consumption['variable'])
+
+    consumption = consumption.select(
+        'case',
+        pl.lit('소요량').alias('variable'),
+        pl.col('index').replace_strict(consumption_index).alias('use'),
+        'value',
+    )
+
+    # 냉난방급탕조명환기 면적
+    area_by_use = (
+        raw.filter(pl.col('variable').str.starts_with('사용면적'))
+        .select(
+            'case',
+            pl.col('variable').str.extract_groups(r'^(?<variable>\w+)\((?<use>\w+)\)$'),
+            'value',
+        )
+        .unnest('variable')
+    )
+
+    # 전력 생산량 보정 면적
+    area = (
+        pl.concat([consumption, area_by_use])
+        .pivot('variable', index=['case', 'use'], values='value')
+        .with_columns(w=pl.col('소요량') / pl.col('사용면적'))
+        .group_by('case')
+        .agg(pl.sum('소요량', 'w'))
+        .select('case', pl.col('소요량').truediv('w').alias('보정면적'))
+    )
+
+    # 면적당 생산, 소요, 자립률, 필요 PV 면적 계산
+    variables = {
+        '42단위면적당 1차에너지 소요량': '면적당1차소요량',
+        '전기에너지 생산량(태양광)': '태양광전력생산량',
+        '전기에너지 생산량(풍력)': '기타전력생산량',
+        '전기에너지 생산량(열병합)': '기타전력생산량',
+        '단위면적당 생산량(태양열)': '면적당기타생산량',
+        '단위면적당 생산량(지열)': '면적당기타생산량',
+        '단위면적당 생산량(수열)': '면적당기타생산량',
+        '단위면적당 생산량(열병합)': '면적당기타생산량',
+    }
+
+    pv = (
+        raw.with_columns(
+            pl.when(pl.col('variable') == '단위면적당 1차에너지 소요량')
+            .then(pl.format('{}{}', 'index', 'variable'))
+            .otherwise('variable')
+            .alias('variable')
+        )
+        .select(
+            'case',
+            pl.col('case').str.extract('(중부[12]|남부|제주)').alias('region'),
+            pl.col('variable')
+            .replace_strict(variables, default=None)
+            .alias('variable'),
+            'value',
+        )
+        .drop_nulls('variable')
+        .group_by('case', 'region', 'variable')
+        .agg(pl.sum('value'))
+        .pivot('variable', index=['case', 'region'], values='value', sort_columns=True)
+        .join(area, on='case', how='left')
+        .join(pl.DataFrame({'EIR': [x + 0.0005 for x in eir]}), how='cross')
+        .with_columns(
+            (
+                pl.col('면적당1차소요량')
+                + 2.75
+                * (pl.col('태양광전력생산량') + pl.col('기타전력생산량'))
+                / pl.col('보정면적')
+                + pl.col('면적당기타생산량')
+            ).alias('면적당1차소요량')  # 제외했던 생산량 다시 더하기
+        )
+        .with_columns(
+            (
+                pl.col('보정면적')
+                * (
+                    pl.col('EIR') * pl.col('면적당1차소요량')
+                    - pl.col('면적당기타생산량')
+                    - 2.75 * pl.col('기타전력생산량')
+                )
+                / 2.75
+            ).alias('요구PV생산량'),
+        )
+        .with_columns(
+            pl.col('요구PV생산량')
+            .truediv(
+                pl.col('region').replace_strict(
+                    Editor.PV_GEN_PER_AREA, return_dtype=pl.Float64
+                )
+            )
+            .alias('요구PV면적')
+        )
+        .sort('case')
+    )
+
+    pv.write_parquet(dst / 'Required-PV.parquet')
+    pv.write_excel(dst / 'Required-PV.xlsx', column_widths=120)
 
 
 if __name__ == '__main__':
