@@ -5,9 +5,9 @@ from __future__ import annotations
 import dataclasses as dc
 import functools
 import itertools
+import math
 import re
 import shutil
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
 
@@ -16,6 +16,8 @@ import more_itertools as mi
 import polars as pl
 from loguru import logger
 from lxml import etree
+from rich.logging import RichHandler
+from rich.progress import track
 
 from eco2edit import report
 from eco2edit.editor import Eco2Editor, EditorError, set_child_text
@@ -32,7 +34,15 @@ HeatingType = Literal['EHP', 'GHP', '보일러', '지역난방']
 CoolingType = Literal['EHP', 'GHP', '흡수식']
 EnergySource = Literal['전기', 'LNG', 'LPG', '난방유', '지역난방']
 
-
+EIR: dict[Grade, float | None] = {
+    None: 0.13,
+    5: 0.2,
+    4: 0.4,
+    3: 0.6,
+    2: 0.8,
+    1: 1.0,
+    0: 1.2,
+}
 PV = """
 <tbl_new>
     <code>0</code>
@@ -192,6 +202,10 @@ class Editor(Eco2Editor):
     }
 
     def __init__(self, case: Case, setting: pl.DataFrame, pv: PVArea | float):
+        if pv == 'required':
+            msg = f'{pv=}'
+            raise ValueError(msg)
+
         super().__init__(case.src)
         self.case = case
         self.setting = setting
@@ -395,15 +409,26 @@ class Editor(Eco2Editor):
         )
         self.set_lighting_load(value)
 
-    def _pv_area(self):
-        if self.pv == 'zero':
-            return 0
-        if isinstance(self.pv, float | int):
-            return self.pv
+    @functools.cached_property
+    def max_pv_area(self):
+        if self.xml.area.building is None:
+            msg = '건축면적 해석 불가'
+            raise ValueError(msg)
 
-        # TODO pv area 'required' 일 때 계산
         ratio = float(self._value(self.part == '최대 태양광 모듈면적비'))
         return round(self.xml.area.building * ratio, 2)
+
+    def _pv_area(self):
+        if isinstance(self.pv, float | int):
+            return min(self.max_pv_area, self.pv)
+
+        match self.pv:
+            case 'zero':
+                return 0
+            case 'max':
+                return self.max_pv_area
+            case 'required' | _:
+                raise ValueError(self.pv)
 
     def _sort_renewable(self):
         for idx, element in enumerate(self.xml.ds.iterfind('tbl_new')):
@@ -427,7 +452,7 @@ class Editor(Eco2Editor):
 
         # 새 PV 적용
         pv = etree.fromstring(PV)
-        set_child_text(pv, '태양광모듈면적', area)
+        set_child_text(pv, '태양광모듈면적', f'{area:.3f}')
 
         last_renewable = mi.last(self.xml.ds.iterfind('tbl_new'))
         index = self.xml.ds.index(last_renewable) + 1
@@ -506,8 +531,10 @@ def filename(src: Path, dst: Path, *, name: bool = False):
 class BatchEditor:
     src: Path
     dst: Path
-    pv: PVArea | float = 'zero'
+    pv: PVArea | float
     xml: bool = False
+
+    required_pv: str | Path | None = 'Required-PV.parquet'
 
     @functools.cached_property
     def settings(self):
@@ -527,20 +554,64 @@ class BatchEditor:
             _filter('grade', _grade(grade)),
         )
 
+    @functools.cached_property
+    def _required_pv(self):
+        if not self.required_pv:
+            return None
+
+        path = self.src.parent / self.required_pv
+        if not path.exists():
+            return None
+
+        return pl.read_parquet(path).select(
+            'case',
+            'ZEB',
+            (pl.col('요구PV면적') * 1000).ceil().truediv(1000).alias('PV'),
+        )
+
+    def _pv_area(self, case: Case):
+        if isinstance(self.pv, float | int):
+            return self.pv
+
+        match self.pv:
+            case 'zero' | 'max':
+                return self.pv
+            case 'required':
+                if self._required_pv is None:
+                    msg = '요구 PV 면적이 입력되지 않음.'
+                    raise ValueError(msg)
+
+                if case.grade is None:
+                    return 0
+
+                row = self._required_pv.row(
+                    by_predicate=(pl.col('case').str.starts_with(str(case)))
+                    & (pl.col('ZEB') == case.grade),
+                    named=True,
+                )
+                return float(row['PV'])
+            case _:
+                raise ValueError(self.pv)
+
+    @functools.cached_property
     def sources(self):
-        for path in self.src.glob('*'):
-            if path.is_file() and path.suffix.lower() in {'.tpl', '.tplx'}:
-                yield path
+        return tuple(
+            x
+            for x in self.src.glob('*')
+            if x.is_file() and x.suffix.lower() in {'.tpl', '.tplx'}
+        )
+
+    def _cases(self):
+        return (
+            self.sources,
+            ('중부1', '중부2', '남부', '제주'),
+            (None, 0, 1, 2, 3, 4, 5),
+        )
 
     def cases(self):
-        sources = tuple(self.sources())
-        regions: tuple[Region, ...] = ('중부1', '중부2', '남부', '제주')
-        grades: tuple[Grade, ...] = (None, 0, 1, 2, 3, 4, 5)
-
         pattern = re.compile(r'^\w(\-C\d)?\-(A\d)\-\w\-\d+')
 
-        # TODO track
-        for src, region, grade in itertools.product(sources, regions, grades):
+        for src, region, grade in itertools.product(*self._cases()):
             if (m := pattern.search(src.stem)) is None:
                 raise ValueError(src.name)
 
@@ -548,11 +619,6 @@ class BatchEditor:
             yield Case(src=src, scale=scale, region=region, grade=grade)
 
     def edit(self, case: Case):
-        path = self.dst / f'{case}-PV-{self.pv}.tpl'
-
-        if path.exists():
-            return
-
         setting = self.filter_setting(
             scale=case.scale, region=case.region, grade=case.grade
         )
@@ -560,7 +626,20 @@ class BatchEditor:
         if not (setting).height:
             raise ValueError(case)
 
-        editor = Editor(case, setting, self.pv)
+        pv_area = self._pv_area(case)
+        editor = Editor(case, setting, pv_area)
+
+        if isinstance(pv_area, float | int) and editor.max_pv_area < pv_area:
+            suffix = '-insufficient'
+            logger.warning(
+                '{} PV 부족 (최대 {}, 필요량 {})', case, editor.max_pv_area, pv_area
+            )
+        else:
+            suffix = ''
+
+        path = self.dst / f'{case}-PV-{self.pv}{suffix}.tpl'
+        if path.exists():
+            return
 
         try:
             editor.edit()
@@ -573,7 +652,8 @@ class BatchEditor:
             editor.xml.write(path.with_suffix('.xml'))
 
     def execute(self):
-        for case in self.cases():
+        total = math.prod(len(x) for x in self._cases())
+        for case in track(self.cases(), total=total):
             logger.info(case)
             self.edit(case)
 
@@ -598,11 +678,7 @@ def edit_pv_test(editor: BatchEditor, *, area: tuple[float, ...] = (0, 10, 20, 1
 
 
 @app.command
-def required_pv(
-    src: Path,
-    dst: Path | None,
-    eir: tuple[float, ...] = (0.2, 0.4, 0.6, 0.8, 1.0, 1.2),
-):
+def required_pv(src: Path, dst: Path | None, safety: float = 0.0005):
     dst = dst or src.parent
     cache = dst / f'{src.name}.parquet'
 
@@ -648,7 +724,11 @@ def required_pv(
     area = (
         pl.concat([consumption, area_by_use])
         .pivot('variable', index=['case', 'use'], values='value')
-        .with_columns(w=pl.col('소요량') / pl.col('사용면적'))
+        .with_columns(
+            w=pl.when(pl.col('소요량') == 0)
+            .then(pl.lit(0))
+            .otherwise(pl.col('소요량') / pl.col('사용면적'))
+        )
         .group_by('case')
         .agg(pl.sum('소요량', 'w'))
         .select('case', pl.col('소요량').truediv('w').alias('보정면적'))
@@ -686,7 +766,16 @@ def required_pv(
         .agg(pl.sum('value'))
         .pivot('variable', index=['case', 'region'], values='value', sort_columns=True)
         .join(area, on='case', how='left')
-        .join(pl.DataFrame({'EIR': [x + 0.0005 for x in eir]}), how='cross')
+        .with_columns(
+            ZEB=pl.col('case')
+            .str.extract(r'\-(Base|ZEB.)\-')
+            .replace({'Base': None, 'ZEB+': '0'})
+            .str.strip_prefix('ZEB')
+            .cast(pl.UInt8)
+        )
+        .with_columns(
+            EIR=pl.col('ZEB').replace_strict(EIR, return_dtype=pl.Float64) + safety
+        )
         .with_columns(
             (
                 pl.col('면적당1차소요량')
@@ -725,6 +814,7 @@ def required_pv(
 
 if __name__ == '__main__':
     logger.remove()
-    logger.add(sys.stdout, level='INFO')
+    logger.add(RichHandler(log_time_format='[%X]'), level='INFO', format='{message}')
+    logger.add('carbon-reduction.log', level='WARNING')
 
     app()
