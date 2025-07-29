@@ -533,8 +533,9 @@ class BatchEditor:
     dst: Path
     pv: PVArea | float
     xml: bool = False
-
     required_pv: str | Path | None = 'Required-PV.parquet'
+
+    _BASE_INDEX: ClassVar[int] = 6
 
     @functools.cached_property
     def settings(self):
@@ -565,7 +566,7 @@ class BatchEditor:
 
         return pl.read_parquet(path).select(
             'case',
-            'ZEB',
+            pl.col('ZEB').fill_null(self._BASE_INDEX),
             (pl.col('요구PV면적') * 1000).ceil().truediv(1000).alias('PV'),
         )
 
@@ -581,12 +582,10 @@ class BatchEditor:
                     msg = '요구 PV 면적이 입력되지 않음.'
                     raise ValueError(msg)
 
-                if case.grade is None:
-                    return 0
-
+                grade = self._BASE_INDEX if case.grade is None else case.grade
                 row = self._required_pv.row(
                     by_predicate=(pl.col('case').str.starts_with(str(case)))
-                    & (pl.col('ZEB') == case.grade),
+                    & (pl.col('ZEB') == grade),
                     named=True,
                 )
                 return float(row['PV'])
