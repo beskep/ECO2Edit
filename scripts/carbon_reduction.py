@@ -20,7 +20,7 @@ from rich.logging import RichHandler
 from rich.progress import track
 
 from eco2edit import report
-from eco2edit.editor import Eco2Editor, EditorError, set_child_text
+from eco2edit.editor import Eco2Editor, Eco2Xml, EditorError, set_child_text
 
 if TYPE_CHECKING:
     from lxml.etree import _Element
@@ -676,139 +676,194 @@ def edit_pv_test(editor: BatchEditor, *, area: tuple[float, ...] = (0, 10, 20, 1
         Editor(case=case, setting=setting, pv=a).edit().write(path)
 
 
-@app.command
-def required_pv(src: Path, dst: Path | None, safety: float = 0.0005):
-    dst = dst or src.parent
-    cache = dst / f'{src.name}.parquet'
+@cyclopts.Parameter(name='*')
+@dc.dataclass(frozen=True)
+class RequiredPV:
+    src: Path  # PV Zero Reports
+    dst: Path | None
+    setting: Path = Path('config/CarbonReduction-NonResidential.csv')
+    safety: float = 0.0005  # 안전률 (요구 자립률에 더함)
 
-    if cache.exists():
-        raw = pl.read_parquet(cache)
-    else:
-        raw = pl.concat(
-            report.CalculationsReport(x).data.select(
-                pl.lit(x.stem).alias('case'), pl.all()
+    @functools.cached_property
+    def output(self):
+        return self.dst or self.src.parent
+
+    def _read_raw(self):
+        tpls = list(self.src.glob('*.tpl'))
+        if (
+            sorted(x.stem for x in tpls)  # fmt
+            != sorted(x.stem for x in self.src.glob('*.xls'))
+        ):
+            raise AssertionError
+
+        for tpl in track(tpls):
+            area = Eco2Xml.read(tpl).area.building
+            yield report.CalculationsReport(tpl.with_suffix('.xls')).data.select(
+                pl.lit(tpl.stem).alias('case'),
+                pl.lit(area).alias('건축면적'),
+                pl.all(),
             )
-            for x in src.glob('*.xls')
-        )
+
+    @functools.cached_property
+    def raw(self):
+        cache = self.output / f'{self.src.name}.parquet'
+
+        if cache.exists():
+            return pl.read_parquet(cache)
+
+        raw = pl.concat(self._read_raw()).rename({'변수': 'variable', '합계': 'value'})
         raw.write_parquet(cache)
         raw.write_excel(cache.with_suffix('.xlsx'), column_widths=100)
 
-    raw = raw.rename({'변수': 'variable', '합계': 'value'})
+        return raw
 
-    # 보정면적 계산 (단위면적당 전력 생산량 계산용)
-    consumption_index = {49: '난방', 57: '냉방', 64: '급탕', 67: '조명', 70: '환기'}
-    consumption = raw.filter(pl.col('index').is_in(tuple(consumption_index.keys())))
-    if not (consumption['variable'] == '전력 소요량').all():
-        raise ValueError(consumption['variable'])
+    def max_pv_ratio(self):
+        data = (
+            pl.read_csv(self.setting)
+            .filter(pl.col('part') == '최대 태양광 모듈면적비')
+            .to_dict()
+        )
 
-    consumption = consumption.select(
-        'case',
-        pl.lit('소요량').alias('variable'),
-        pl.col('index').replace_strict(consumption_index).alias('use'),
-        'value',
-    )
+        for key, values in data.items():
+            if key == 'Base' or key.startswith('ZEB'):
+                yield key, values[0]
 
-    # 냉난방급탕조명환기 면적
-    area_by_use = (
-        raw.filter(pl.col('variable').str.starts_with('사용면적'))
-        .select(
+    def consumption(self):
+        # 보정면적 계산 (단위면적당 전력 생산량 계산용)
+        index = {49: '난방', 57: '냉방', 64: '급탕', 67: '조명', 70: '환기'}
+        data = self.raw.filter(pl.col('index').is_in(tuple(index.keys())))
+        if not (data['variable'] == '전력 소요량').all():
+            raise ValueError(data['variable'])
+
+        return data.select(
             'case',
-            pl.col('variable').str.extract_groups(r'^(?<variable>\w+)\((?<use>\w+)\)$'),
+            pl.lit('소요량').alias('variable'),
+            pl.col('index').replace_strict(index).alias('use'),
             'value',
         )
-        .unnest('variable')
-    )
 
-    # 전력 생산량 보정 면적
-    area = (
-        pl.concat([consumption, area_by_use])
-        .pivot('variable', index=['case', 'use'], values='value')
-        .with_columns(
-            w=pl.when(pl.col('소요량') == 0)
-            .then(pl.lit(0))
-            .otherwise(pl.col('소요량') / pl.col('사용면적'))
+    def area_by_use(self):
+        # 냉난방급탕조명환기 면적
+        pattern = r'^(?<variable>\w+)\((?<use>\w+)\)$'
+        return (
+            self.raw.filter(pl.col('variable').str.starts_with('사용면적'))
+            .select('case', pl.col('variable').str.extract_groups(pattern), 'value')
+            .unnest('variable')
         )
-        .group_by('case')
-        .agg(pl.sum('소요량', 'w'))
-        .select('case', pl.col('소요량').truediv('w').alias('보정면적'))
-    )
 
-    # 면적당 생산, 소요, 자립률, 필요 PV 면적 계산
-    variables = {
-        '42단위면적당 1차에너지 소요량': '면적당1차소요량',
-        '전기에너지 생산량(태양광)': '태양광전력생산량',
-        '전기에너지 생산량(풍력)': '기타전력생산량',
-        '전기에너지 생산량(열병합)': '기타전력생산량',
-        '단위면적당 생산량(태양열)': '면적당기타생산량',
-        '단위면적당 생산량(지열)': '면적당기타생산량',
-        '단위면적당 생산량(수열)': '면적당기타생산량',
-        '단위면적당 생산량(열병합)': '면적당기타생산량',
-    }
-
-    pv = (
-        raw.with_columns(
-            pl.when(pl.col('variable') == '단위면적당 1차에너지 소요량')
-            .then(pl.format('{}{}', 'index', 'variable'))
-            .otherwise('variable')
-            .alias('variable')
-        )
-        .select(
-            'case',
-            pl.col('case').str.extract('(중부[12]|남부|제주)').alias('region'),
-            pl.col('variable')
-            .replace_strict(variables, default=None)
-            .alias('variable'),
-            'value',
-        )
-        .drop_nulls('variable')
-        .group_by('case', 'region', 'variable')
-        .agg(pl.sum('value'))
-        .pivot('variable', index=['case', 'region'], values='value', sort_columns=True)
-        .join(area, on='case', how='left')
-        .with_columns(
-            ZEB=pl.col('case')
-            .str.extract(r'\-(Base|ZEB.)\-')
-            .replace({'Base': None, 'ZEB+': '0'})
-            .str.strip_prefix('ZEB')
-            .cast(pl.UInt8)
-        )
-        .with_columns(
-            EIR=pl.col('ZEB').replace_strict(EIR, return_dtype=pl.Float64) + safety
-        )
-        .with_columns(
-            (
-                pl.col('면적당1차소요량')
-                + 2.75
-                * (pl.col('태양광전력생산량') + pl.col('기타전력생산량'))
-                / pl.col('보정면적')
-                + pl.col('면적당기타생산량')
-            ).alias('면적당1차소요량')  # 제외했던 생산량 다시 더하기
-        )
-        .with_columns(
-            (
-                pl.col('보정면적')
-                * (
-                    pl.col('EIR') * pl.col('면적당1차소요량')
-                    - pl.col('면적당기타생산량')
-                    - 2.75 * pl.col('기타전력생산량')
-                )
-                / 2.75
-            ).alias('요구PV생산량'),
-        )
-        .with_columns(
-            pl.col('요구PV생산량')
-            .truediv(
-                pl.col('region').replace_strict(
-                    Editor.PV_GEN_PER_AREA, return_dtype=pl.Float64
-                )
+    def elec_area(self):
+        # 전력 생산량 보정 면적
+        return (
+            pl.concat([self.consumption(), self.area_by_use()])
+            .pivot('variable', index=['case', 'use'], values='value')
+            .with_columns(
+                w=pl.when(pl.col('소요량') == 0)
+                .then(pl.lit(0))
+                .otherwise(pl.col('소요량') / pl.col('사용면적'))
             )
-            .alias('요구PV면적')
+            .group_by('case')
+            .agg(pl.sum('소요량', 'w'))
+            .select('case', pl.col('소요량').truediv('w').alias('보정면적'))
         )
-        .sort('case')
-    )
 
-    pv.write_parquet(dst / 'Required-PV.parquet')
-    pv.write_excel(dst / 'Required-PV.xlsx', column_widths=120)
+    def __call__(self):
+        # 면적당 생산, 소요, 자립률, 필요 PV 면적 계산
+        variables = {
+            '42단위면적당 1차에너지 소요량': '면적당1차소요량',
+            '전기에너지 생산량(태양광)': '태양광전력생산량',
+            '전기에너지 생산량(풍력)': '기타전력생산량',
+            '전기에너지 생산량(열병합)': '기타전력생산량',
+            '단위면적당 생산량(태양열)': '면적당기타생산량',
+            '단위면적당 생산량(지열)': '면적당기타생산량',
+            '단위면적당 생산량(수열)': '면적당기타생산량',
+            '단위면적당 생산량(열병합)': '면적당기타생산량',
+        }
+
+        generation = (
+            self.raw.with_columns(
+                pl.when(pl.col('variable') == '단위면적당 1차에너지 소요량')
+                .then(pl.format('{}{}', 'index', 'variable'))
+                .otherwise('variable')
+                .alias('variable')
+            )
+            .select(
+                'case',
+                pl.col('case').str.extract('(중부[12]|남부|제주)').alias('region'),
+                pl.col('variable')
+                .replace_strict(variables, default=None)
+                .alias('variable'),
+                'value',
+            )
+            .drop_nulls('variable')
+            .group_by('case', 'region', 'variable')
+            .agg(pl.sum('value'))
+            .pivot(
+                'variable', index=['case', 'region'], values='value', sort_columns=True
+            )
+        )
+
+        max_ratio = dict(self.max_pv_ratio())
+        return (
+            generation.join(self.elec_area(), on='case', how='left')
+            .with_columns(ZEB=pl.col('case').str.extract(r'\-(Base|ZEB.)\-'))
+            .with_columns(
+                grade=pl.col('ZEB')
+                .replace({'Base': None, 'ZEB+': '0'})
+                .str.strip_prefix('ZEB')
+                .cast(pl.UInt8)
+            )
+            .with_columns(
+                EIR=pl.col('grade').replace_strict(EIR, return_dtype=pl.Float64)
+                + self.safety
+            )
+            .with_columns(
+                (
+                    pl.col('면적당1차소요량')
+                    + 2.75
+                    * (pl.col('태양광전력생산량') + pl.col('기타전력생산량'))
+                    / pl.col('보정면적')
+                    + pl.col('면적당기타생산량')
+                ).alias('면적당1차소요량')  # 제외했던 생산량 다시 더하기
+            )
+            .with_columns(
+                (
+                    pl.col('보정면적')
+                    * (
+                        pl.col('EIR') * pl.col('면적당1차소요량')
+                        - pl.col('면적당기타생산량')
+                        - 2.75 * pl.col('기타전력생산량')
+                    )
+                    / 2.75
+                ).alias('요구PV생산량'),
+            )
+            .with_columns(
+                pl.col('요구PV생산량')
+                .truediv(
+                    pl.col('region').replace_strict(
+                        Editor.PV_GEN_PER_AREA, return_dtype=pl.Float64
+                    )
+                )
+                .alias('요구PV면적'),
+                pl.col('ZEB')
+                .replace_strict(max_ratio, return_dtype=pl.Float64)
+                .alias('최대면적비'),
+            )
+            .join(
+                self.raw.select('case', '건축면적').unique(),
+                on='case',
+                how='left',
+            )
+            .with_columns((pl.col('건축면적') * pl.col('최대면적비')).alias('최대면적'))
+            .sort('case')
+        )
+
+
+@app.command
+def required_pv(required_pv: RequiredPV):
+    pv = required_pv()
+
+    pv.write_parquet(required_pv.output / 'Required-PV.parquet')
+    pv.write_excel(required_pv.output / 'Required-PV.xlsx', column_widths=100)
 
 
 if __name__ == '__main__':
