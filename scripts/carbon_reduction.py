@@ -566,8 +566,9 @@ class BatchEditor:
 
         return pl.read_parquet(path).select(
             'case',
-            pl.col('ZEB').fill_null(self._BASE_INDEX),
-            (pl.col('요구PV면적') * 1000).ceil().truediv(1000).alias('PV'),
+            pl.col('grade').fill_null(self._BASE_INDEX),
+            (pl.col('PV면적') * 1000).ceil().truediv(1000).alias('PV'),
+            '충족',
         )
 
     def _pv_area(self, case: Case):
@@ -576,7 +577,7 @@ class BatchEditor:
 
         match self.pv:
             case 'zero' | 'max':
-                return self.pv
+                return self.pv, True
             case 'required':
                 if self._required_pv is None:
                     msg = '요구 PV 면적이 입력되지 않음.'
@@ -585,10 +586,10 @@ class BatchEditor:
                 grade = self._BASE_INDEX if case.grade is None else case.grade
                 row = self._required_pv.row(
                     by_predicate=(pl.col('case').str.starts_with(str(case)))
-                    & (pl.col('ZEB') == grade),
+                    & (pl.col('grade') == grade),
                     named=True,
                 )
-                return float(row['PV'])
+                return float(row['PV']), row['충족']
             case _:
                 raise ValueError(self.pv)
 
@@ -625,18 +626,11 @@ class BatchEditor:
         if not (setting).height:
             raise ValueError(case)
 
-        pv_area = self._pv_area(case)
+        pv_area, sufficient = self._pv_area(case)
         editor = Editor(case, setting, pv_area)
 
-        if isinstance(pv_area, float | int) and editor.max_pv_area < pv_area:
-            suffix = '-insufficient'
-            logger.warning(
-                '{} PV 부족 (최대 {}, 필요량 {})', case, editor.max_pv_area, pv_area
-            )
-        else:
-            suffix = ''
-
-        path = self.dst / f'{case}-PV-{self.pv}{suffix}.tpl'
+        suffix = 'sufficient' if sufficient else 'insufficient'
+        path = self.dst / f'{case}-PV-{self.pv}-{suffix}.tpl'
         if path.exists():
             return
 
@@ -854,6 +848,10 @@ class RequiredPV:
                 how='left',
             )
             .with_columns((pl.col('건축면적') * pl.col('최대면적비')).alias('최대면적'))
+            .with_columns(
+                (pl.col('요구PV면적') <= pl.col('최대면적')).alias('충족'),
+                pl.min_horizontal('요구PV면적', '최대면적').alias('PV면적'),
+            )
             .sort('case')
         )
 
