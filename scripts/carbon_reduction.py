@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 Region = Literal['중부1', '중부2', '남부', '제주']
 Grade = Literal[5, 4, 3, 2, 1, 0] | None  # None -> base, 0 -> ZEB+
-PVArea = Literal['zero', 'max', 'required']
+PVArea = Literal['zero', 'required']
 
 HeatingType = Literal['EHP', 'GHP', '보일러', '지역난방']
 CoolingType = Literal['EHP', 'GHP', '흡수식']
@@ -83,6 +83,21 @@ PV = """
     <태양광용량>0</태양광용량>
 </tbl_new>
 """
+PV_GEN_PER_AREA: dict[str, dict[Region, float]] = {
+    # kWh/m²
+    'PV': {
+        '중부1': 201.983736,
+        '중부2': 197.503394,
+        '남부': 224.25875,
+        '제주': 209.032917,
+    },
+    'BIPV': {
+        '중부1': 89.046987,
+        '중부2': 97.839892,
+        '남부': 115.092109,
+        '제주': 80.210067,
+    },
+}
 
 
 def _dict(obj: _Element, /) -> dict[str, str | None]:
@@ -193,15 +208,14 @@ class Editor(Eco2Editor):
         '부산': '020100',
         '제주': '170100',
     }
-    PV_GEN_PER_AREA: ClassVar[dict[Region, float]] = {
-        # kWh/m²
-        '중부1': 201.983736,
-        '중부2': 197.503394,
-        '남부': 224.25875,
-        '제주': 209.032917,
-    }
 
-    def __init__(self, case: Case, setting: pl.DataFrame, pv: PVArea | float):
+    def __init__(
+        self,
+        case: Case,
+        setting: pl.DataFrame,
+        pv: float = 0,
+        bipv: float = 0,
+    ):
         if pv == 'required':
             msg = f'{pv=}'
             raise ValueError(msg)
@@ -209,7 +223,8 @@ class Editor(Eco2Editor):
         super().__init__(case.src)
         self.case = case
         self.setting = setting
-        self.pv: PVArea | float = pv
+        self.pv: float = pv
+        self.bipv: float = bipv
 
         self.category = pl.col('category')
         self.part = pl.col('part')
@@ -418,18 +433,6 @@ class Editor(Eco2Editor):
         ratio = float(self._value(self.part == '최대 태양광 모듈면적비'))
         return round(self.xml.area.building * ratio, 2)
 
-    def _pv_area(self):
-        if isinstance(self.pv, float | int):
-            return min(self.max_pv_area, self.pv)
-
-        match self.pv:
-            case 'zero':
-                return 0
-            case 'max':
-                return self.max_pv_area
-            case 'required' | _:
-                raise ValueError(self.pv)
-
     def _sort_renewable(self):
         for idx, element in enumerate(self.xml.ds.iterfind('tbl_new')):
             prev = element.findtext('code')
@@ -446,18 +449,34 @@ class Editor(Eco2Editor):
             if element.findtext('기기종류') == '태양광':
                 self.xml.ds.remove(element)
 
-        area = self._pv_area()
-        if self.pv == 'zero' or not area:
+        if not (self.pv or self.bipv):
             return
 
-        # 새 PV 적용
-        pv = etree.fromstring(PV)
-        set_child_text(pv, '태양광모듈면적', f'{area:.3f}')
+        # PV
+        if self.pv:
+            pv = etree.fromstring(PV)
+            set_child_text(pv, '태양광모듈면적', f'{self.pv:.3f}')
+            set_child_text(pv, '태양광모듈효율', '0.2')
 
-        last_renewable = mi.last(self.xml.ds.iterfind('tbl_new'))
-        index = self.xml.ds.index(last_renewable) + 1
+            last_renewable = mi.last(self.xml.ds.iterfind('tbl_new'))
+            index = self.xml.ds.index(last_renewable) + 1
 
-        self.xml.ds.insert(index, pv)
+            self.xml.ds.insert(index, pv)
+
+        # BIPV
+        if self.bipv:
+            bipv = etree.fromstring(PV)
+            set_child_text(bipv, '설명', 'BIPV')
+            set_child_text(bipv, '태양광모듈면적', f'{self.bipv:.3f}')
+            set_child_text(bipv, '태양광모듈기울기', '수직')
+            set_child_text(bipv, '태양광모듈방위', '남')
+            set_child_text(bipv, '태양광모듈적용타입', '밀착형')
+            set_child_text(bipv, '태양광모듈효율', '0.16')
+
+            last_renewable = mi.last(self.xml.ds.iterfind('tbl_new'))
+            index = self.xml.ds.index(last_renewable) + 1
+
+            self.xml.ds.insert(index, bipv)
 
         # code 순서에 따라 정렬
         codes = dict(self._sort_renewable())
@@ -531,9 +550,10 @@ def filename(src: Path, dst: Path, *, name: bool = False):
 class BatchEditor:
     src: Path
     dst: Path
-    pv: PVArea | float
+    pv: PVArea | float = 'zero'
     xml: bool = False
     required_pv: str | Path | None = 'Required-PV.parquet'
+    precision: int = 2
 
     _BASE_INDEX: ClassVar[int] = 6
 
@@ -564,20 +584,21 @@ class BatchEditor:
         if not path.exists():
             return None
 
+        k = 10**self.precision
         return pl.read_parquet(path).select(
             'case',
             pl.col('grade').fill_null(self._BASE_INDEX),
-            (pl.col('PV면적') * 1000).ceil().truediv(1000).alias('PV'),
-            '충족',
+            (pl.col('PV면적') * k).ceil().truediv(k).alias('PV'),
+            (pl.col('BIPV면적') * k).ceil().truediv(k).alias('BIPV'),
         )
 
-    def _pv_area(self, case: Case):
+    def _pv_area(self, case: Case) -> tuple[float, float]:
         if isinstance(self.pv, float | int):
-            return self.pv
+            return self.pv, 0
 
         match self.pv:
-            case 'zero' | 'max':
-                return self.pv, True
+            case 'zero':
+                return 0, 0
             case 'required':
                 if self._required_pv is None:
                     msg = '요구 PV 면적이 입력되지 않음.'
@@ -589,7 +610,7 @@ class BatchEditor:
                     & (pl.col('grade') == grade),
                     named=True,
                 )
-                return float(row['PV']), row['충족']
+                return float(row['PV']), float(row['BIPV'])
             case _:
                 raise ValueError(self.pv)
 
@@ -626,10 +647,16 @@ class BatchEditor:
         if not (setting).height:
             raise ValueError(case)
 
-        pv_area, sufficient = self._pv_area(case)
-        editor = Editor(case, setting, pv_area)
+        pv, bipv = self._pv_area(case)
+        editor = Editor(case, setting, pv=max(0, pv), bipv=bipv)
 
-        suffix = 'sufficient' if sufficient else 'insufficient'
+        if pv < 0:
+            suffix = 'PvNotRequired'
+        elif bipv:
+            suffix = 'BIPV'
+        else:
+            suffix = 'PV'
+
         path = self.dst / f'{case}-PV-{self.pv}-{suffix}.tpl'
         if path.exists():
             return
@@ -658,7 +685,7 @@ def edit(editor: BatchEditor):
 
 
 @app.command
-def edit_pv_test(editor: BatchEditor, *, area: tuple[float, ...] = (0, 10, 20, 100)):
+def gen_per_area(editor: BatchEditor, *, area: tuple[float, ...] = (0, 10, 100)):
     """PV 면적 테스트 케이스 생성."""
     cases = tuple(x for x in editor.cases() if x.grade is None)
     for case, a in itertools.product(cases, area):
@@ -666,8 +693,12 @@ def edit_pv_test(editor: BatchEditor, *, area: tuple[float, ...] = (0, 10, 20, 1
         setting = editor.filter_setting(
             scale=case.scale, region=case.region, grade=case.grade
         )
-        path = editor.dst / f'{case}-PV-{a}.tpl'
-        Editor(case=case, setting=setting, pv=a).edit().write(path)
+
+        pv = editor.dst / f'{case}-PV-{a}.tpl'
+        Editor(case=case, setting=setting, pv=a).edit().write(pv)
+
+        bipv = editor.dst / f'{case}-BIPV-{a}.tpl'
+        Editor(case=case, setting=setting, pv=0, bipv=a).edit().write(bipv)
 
 
 @cyclopts.Parameter(name='*')
@@ -829,14 +860,16 @@ class RequiredPV:
                     )
                     / 2.75
                 ).alias('요구PV생산량'),
+                pl.col('region')
+                .replace_strict(PV_GEN_PER_AREA['PV'], return_dtype=pl.Float64)
+                .alias('면적당PV발전량'),
+                pl.col('region')
+                .replace_strict(PV_GEN_PER_AREA['BIPV'], return_dtype=pl.Float64)
+                .alias('면적당BIPV발전량'),
             )
             .with_columns(
                 pl.col('요구PV생산량')
-                .truediv(
-                    pl.col('region').replace_strict(
-                        Editor.PV_GEN_PER_AREA, return_dtype=pl.Float64
-                    )
-                )
+                .truediv(pl.col('면적당PV발전량'))
                 .alias('요구PV면적'),
                 pl.col('ZEB')
                 .replace_strict(max_ratio, return_dtype=pl.Float64)
@@ -849,8 +882,13 @@ class RequiredPV:
             )
             .with_columns((pl.col('건축면적') * pl.col('최대면적비')).alias('최대면적'))
             .with_columns(
-                (pl.col('요구PV면적') <= pl.col('최대면적')).alias('충족'),
                 pl.min_horizontal('요구PV면적', '최대면적').alias('PV면적'),
+                pl.max_horizontal(
+                    pl.lit(0),
+                    (pl.col('요구PV면적') - pl.col('최대면적'))
+                    .mul(pl.col('면적당PV발전량'))
+                    .truediv(pl.col('면적당BIPV발전량')),
+                ).alias('BIPV면적'),
             )
             .sort('case')
         )
