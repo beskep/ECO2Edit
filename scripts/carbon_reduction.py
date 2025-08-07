@@ -17,7 +17,7 @@ import polars as pl
 from loguru import logger
 from lxml import etree
 from rich.logging import RichHandler
-from rich.progress import track
+from tqdm.rich import tqdm
 
 from eco2edit import report
 from eco2edit.editor import Eco2Editor, Eco2Xml, EditorError, set_child_text
@@ -673,8 +673,7 @@ class BatchEditor:
 
     def execute(self):
         total = math.prod(len(x) for x in self._cases())
-        for case in track(self.cases(), total=total):
-            logger.info(case)
+        for case in tqdm(self.cases(), total=total):
             self.edit(case)
 
 
@@ -708,22 +707,26 @@ class RequiredPV:
     dst: Path | None
     setting: Path = Path('config/CarbonReduction-NonResidential.csv')
     safety: float = 0.0005  # 안전률 (요구 자립률에 더함)
+    xls_suffix: str = ' 계산결과'
 
     @functools.cached_property
     def output(self):
         return self.dst or self.src.parent
 
     def _read_raw(self):
-        tpls = list(self.src.glob('*.tpl'))
+        tpls = tuple(self.src.glob('*.tpl'))
         if (
             sorted(x.stem for x in tpls)  # fmt
-            != sorted(x.stem for x in self.src.glob('*.xls'))
+            != sorted(
+                x.stem.removesuffix(self.xls_suffix) for x in self.src.glob('*.xls')
+            )
         ):
             raise AssertionError
 
-        for tpl in track(tpls):
+        for tpl in tqdm(tpls):
             area = Eco2Xml.read(tpl).area.building
-            yield report.CalculationsReport(tpl.with_suffix('.xls')).data.select(
+            xls = tpl.parent / f'{tpl.stem}{self.xls_suffix}.xls'
+            yield report.CalculationsReport(xls).data.select(
                 pl.lit(tpl.stem).alias('case'),
                 pl.lit(area).alias('건축면적'),
                 pl.all(),
@@ -900,6 +903,22 @@ def required_pv(required_pv: RequiredPV):
 
     pv.write_parquet(required_pv.output / 'Required-PV.parquet')
     pv.write_excel(required_pv.output / 'Required-PV.xlsx', column_widths=100)
+
+
+@app.command
+def filter_chp(root: Path):
+    """열병합 케이스 필터링."""
+    chp = root / 'CHP'
+    non_chp = root / 'NON-CHP'
+
+    chp.mkdir(exist_ok=True)
+    non_chp.mkdir(exist_ok=True)
+
+    for path in tqdm(tuple(root.glob('*.tpl'))):
+        eco = Eco2Xml.read(path)
+        elements = eco.ds.xpath('//tbl_new[기기종류="열병합"]')
+        dst = chp if elements else non_chp
+        path.rename(dst / path.name)
 
 
 if __name__ == '__main__':
