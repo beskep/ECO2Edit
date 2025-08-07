@@ -856,9 +856,9 @@ class RequiredPV:
                     * (
                         pl.col('EIR') * pl.col('면적당1차소요량')
                         - pl.col('면적당기타생산량')
-                        - 2.75 * pl.col('기타전력생산량')
                     )
                     / 2.75
+                    - pl.col('기타전력생산량')
                 ).alias('요구PV생산량'),
                 pl.col('region')
                 .replace_strict(PV_GEN_PER_AREA['PV'], return_dtype=pl.Float64)
