@@ -53,18 +53,21 @@ def set_child_text(element: _Element, child: str, value: Any):
 
 @dc.dataclass(frozen=True)
 class Area:
-    site: float
+    site: float | None
     """대지면적"""
 
-    building: float
+    building: float | None
     """건축면적"""
 
-    floor: float
+    floor: float | None
     """연면적"""
 
     @staticmethod
     def _value(element: _Element, path: str):
-        return float(element.findtext(path, NOT_FOUND).replace(',', ''))
+        try:
+            return float(element.findtext(path, NOT_FOUND).replace(',', ''))
+        except ValueError:
+            return None
 
     @classmethod
     def create(cls, desc: _Element):
@@ -147,7 +150,7 @@ class Eco2Xml(_Eco2Xml):
         # 전체 열관류율 수정
         if balcony := float(window.findtext('발코니창호열관류율') or 0):
             t = 1.0 / (1.0 / uvalue + 1.0 / (2.0 * balcony))
-            logger.info('창호 전체 열관류율: {} (glazing={})', t, window)
+            logger.debug('창호 전체 열관류율: {} (glazing={})', t, window)
             total = f'{t:.3f}'
         else:
             total = str(uvalue)
@@ -163,7 +166,7 @@ class Eco2Xml(_Eco2Xml):
     ):
         path = '일사에너지투과율'
 
-        if not update_zero and (float(window.findtext(path, NOT_FOUND)) == 0):
+        if not update_zero and (float(window.findtext(path, NOT_FOUND) or 0) == 0):
             # '외부창'의 원래 SHGC가 0인 경우 (투과율 없는 문) 값을 수정하지 않음.
             return
 
@@ -171,7 +174,7 @@ class Eco2Xml(_Eco2Xml):
         set_child_text(window, path, shgc)
 
         # 전체 투과율 수정
-        balcony = float(window.findtext('발코니투과율', NOT_FOUND))
+        balcony = float(window.findtext('발코니투과율', NOT_FOUND) or 0)
         total = f'{balcony * shgc:.4f}' if balcony else str(shgc)
         set_child_text(window, '투과율', total)
 
