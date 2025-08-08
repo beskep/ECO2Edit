@@ -921,6 +921,27 @@ def filter_chp(root: Path):
         path.rename(dst / path.name)
 
 
+@app.command
+def pv_bldg_area(root: Path, threshold: float = 0.901):
+    """PV면적, 건축면적 비율 검토."""
+    for path in tqdm(tuple(root.glob('*.tplx'))):
+        eco = Eco2Xml.read(path)
+        area = eco.area.building
+        assert area is not None
+
+        pv = mi.only(
+            x for x in eco.ds.iterfind('tbl_new') if x.findtext('설명') == 'PV'
+        )
+        if pv is None:
+            logger.info('No PV in {}', path.name)
+            continue
+
+        pv_area = float(pv.findtext('태양광모듈면적'))
+        r = pv_area / area
+        if r >= threshold:
+            logger.warning('r={} | case={}', r, path.name)
+
+
 if __name__ == '__main__':
     logger.remove()
     logger.add(RichHandler(log_time_format='[%X]'), level='INFO', format='{message}')
