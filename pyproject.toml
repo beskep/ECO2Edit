@@ -8,17 +8,21 @@ requires-python = ">= 3.12"
 dependencies = [
     "eco2 @ git+https://github.com/beskep/ECO2",
     "more-itertools>=10.6.0",
-    "polars>=1.31.0",
     "pydash>=8.0.5",
     "scipy>=1.15.2",
+    "tqdm>=4.67.1",
 ]
 
 [dependency-groups]
 dev = ["mypy>=1.15.0", "ruff>=0.11.5", "types-lxml>=2025.3.30"]
+dataframe = ["fastexcel>=0.14.0", "polars>=1.32.2", "xlsxwriter>=3.2.5"]
 
 [build-system]
 requires = ["uv_build>=0.8.0,<0.9"]
 build-backend = "uv_build"
+
+[tool.uv]
+default-groups = "all"
 
 [tool.ruff]
 preview = true
@@ -45,12 +49,10 @@ extend-safe-fixes = [
     "EM", # flake8-errmsg
     "TC", # flake8-type-checking
 ]
+future-annotations = true
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
-
-[tool.ruff.lint.isort]
-required-imports = ["from __future__ import annotations"]
 
 [tool.mypy]
 disable_error_code = ["import-untyped", "import", "var-annotated"]
