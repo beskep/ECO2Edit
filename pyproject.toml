@@ -11,6 +11,7 @@ dependencies = [
     "polars>=1.31.0",
     "pydash>=8.0.5",
     "scipy>=1.15.2",
+    "tqdm>=4.67.1",
 ]
 
 [dependency-groups]
@@ -46,12 +47,10 @@ extend-safe-fixes = [
     "EM", # flake8-errmsg
     "TC", # flake8-type-checking
 ]
+future-annotations = true
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
-
-[tool.ruff.lint.isort]
-required-imports = ["from __future__ import annotations"]
 
 [tool.mypy]
 disable_error_code = ["import-untyped", "import", "var-annotated"]
