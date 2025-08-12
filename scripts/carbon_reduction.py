@@ -563,7 +563,7 @@ class BatchEditor:
         index = ['category', 'part', 'region', 'source', 'scale']
         return (
             # NOTE 주거 추가 시 수정
-            pl.scan_csv(root / 'config/CarbonReduction-NonResidential.csv')
+            pl.scan_csv(root / 'config/carbon-reduction/non-residential.csv')
             .unpivot(index=index, variable_name='grade')
             .collect()
         )
