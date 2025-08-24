@@ -331,7 +331,7 @@ class Editor(Eco2Editor):
             case 'SHGC':
                 self.set_windows(uvalue=None, shgc=value)
             case '조명밀도':
-                self.set_lighting_load(value)
+                self.xml.set_elements('tbl_zone/조명에너지부하율입력치', str(value))
             case '냉방설비제어':
                 self._edit_cooling_control(value)
             case 'PV.모듈면적':

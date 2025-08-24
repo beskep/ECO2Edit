@@ -109,6 +109,24 @@ class Eco2Xml(_Eco2Xml):
 
         return Area.create(desc)
 
+    def set_elements(self, path: str, value: str | None, *, skip_none: bool = True):
+        """
+        XML 내 모든 path 수정.
+
+        e.g. 침기율 수정 시 path로 `tbl_zone/침기율` 지정.
+
+        Parameters
+        ----------
+        path : str
+        value : str | None
+        set_none : bool, optional
+        """
+        for e in self.iterfind(path):
+            if skip_none and e.text is None:
+                continue
+
+            e.text = value
+
     def surfaces_by_type(self, t: int | str, /):
         if isinstance(t, str):
             t = self.SURFACE_TYPE.index(t)
@@ -252,21 +270,5 @@ class Eco2Editor:
                 self.xml.set_window_shgc(
                     window=w, shgc=shgc, update_zero=update_zero_shgc
                 )
-
-        return self
-
-    def set_infiltration_rate(self, value: float | str):
-        value = str(value)
-        for e in self.xml.iterfind('tbl_zone/침기율'):
-            if e.text is not None:
-                e.text = value
-
-        return self
-
-    def set_lighting_load(self, value: float | str):
-        value = str(value)
-        for e in self.xml.iterfind('tbl_zone/조명에너지부하율입력치'):
-            if e.text is not None:
-                e.text = value
 
         return self

@@ -443,7 +443,7 @@ class Editor(Eco2Editor):
         value = self._value(
             (self.category == '전기') & (self.part == '평균조명에너지부하율')
         )
-        self.set_lighting_load(value)
+        self.xml.set_elements('평균조명에너지부하율', value)
 
     @functools.cached_property
     def max_pv_area(self):
