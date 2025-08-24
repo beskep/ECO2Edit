@@ -678,13 +678,6 @@ class BatchEditor:
             raise EditorError(case)
 
         pv, bipv = self._pv_area(case)
-        editor = Editor(
-            case=case,
-            setting=setting,
-            bldg=self.bldg,
-            pv=max(0, pv),
-            bipv=bipv,
-        )
 
         if pv < 0:
             suffix = 'PvNotRequired'
@@ -697,11 +690,19 @@ class BatchEditor:
         if path.exists():
             return
 
+        editor = Editor(
+            case=case,
+            setting=setting,
+            bldg=self.bldg,
+            pv=max(0, pv),
+            bipv=bipv,
+        )
+
         try:
             editor.edit()
         except EditorError as e:
-            logger.error(repr(e))
-            raise
+            logger.error('{} {}', case, repr(e))
+            return
 
         editor.write(path)
         if self.xml:
@@ -712,7 +713,7 @@ class BatchEditor:
 
         total = math.prod(len(x) for x in self._cases())
         warnings.simplefilter('ignore', TqdmExperimentalWarning)
-        for case in tqdm(self.cases(), total=total):
+        for case in tqdm(self.cases(), total=total, miniters=1, smoothing=0.9):
             self.edit(case)
 
 
@@ -744,9 +745,9 @@ def gen_per_area(editor: BatchEditor, *, area: tuple[float, ...] = (0, 10, 100))
 @dc.dataclass(frozen=True)
 class RequiredPV:
     src: Path  # PV Zero Reports
-    dst: Path | None
-    setting: Path = Path('config/CarbonReduction-NonResidential.csv')
-    safety: float = 0.0005  # 안전률 (요구 자립률에 더함)
+    dst: Path | None = None
+    setting: Path = Path('config/carbon-reduction/non-residential.csv')
+    safety: float = 0.001  # 안전률 (요구 자립률에 더함)
     xls_suffix: str = ' 계산결과'
 
     @functools.cached_property
@@ -754,11 +755,13 @@ class RequiredPV:
         return self.dst or self.src.parent
 
     def _read_raw(self):
-        tpls = tuple(self.src.glob('*.tpl'))
+        tpls = tuple(x for x in self.src.glob('*') if x.suffix in {'.tpl', '.tplx'})
         if (
             sorted(x.stem for x in tpls)  # fmt
             != sorted(
-                x.stem.removesuffix(self.xls_suffix) for x in self.src.glob('*.xls')
+                x.stem.removesuffix(self.xls_suffix)
+                for x in self.src.glob('*.xls')
+                if '결과그래프' not in x.name
             )
         ):
             raise AssertionError
