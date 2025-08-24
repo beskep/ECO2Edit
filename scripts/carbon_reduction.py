@@ -979,7 +979,7 @@ def pv_bldg_area(root: Path, threshold: float = 0.901):
             logger.info('No PV in {}', path.name)
             continue
 
-        pv_area = float(pv.findtext('태양광모듈면적'))
+        pv_area = float(pv.findtext('태양광모듈면적', 'ERROR'))
         r = pv_area / area
         if r >= threshold:
             logger.warning('r={} | case={}', r, path.name)

@@ -4,17 +4,15 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses as dc
-import io
 import json
 import re
 from functools import cached_property
 from operator import length_hint
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 import more_itertools as mi
 import pydash as pyd
-from eco2 import Eco2
 from loguru import logger
 from scipy.stats.qmc import LatinHypercube
 
@@ -157,7 +155,7 @@ class Editor(Eco2Editor):
 
     def __init__(
         self,
-        src: str | Path | IO[str],
+        src: str | Path,
         name: str,
         *,
         log_excluded: int = 10,
@@ -170,7 +168,7 @@ class Editor(Eco2Editor):
         self.usage = m.group(1)
         self.region = m.group(2)
         self.scale = (
-            '소규모' if self.area.floor < self.FLOOR_AREA_THRESHOLD else '중대규모'
+            '소규모' if self.xml.area.floor < self.FLOOR_AREA_THRESHOLD else '중대규모'
         )
         self.log_excluded = log_excluded
 
@@ -337,7 +335,7 @@ class Editor(Eco2Editor):
             case '냉방설비제어':
                 self._edit_cooling_control(value)
             case 'PV.모듈면적':
-                self.set_pv(area=round(self.area.building * value, 3))
+                self.set_pv(area=round(self.xml.area.building * value, 3))
             case 'PV.모듈효율':
                 self.set_pv(efficiency=value)
             case _:
@@ -371,8 +369,7 @@ class BatchEditor:
 
     def iter_case(self):
         for src in self.input_:
-            xml = src if src.suffix == '.xml' else io.StringIO(Eco2.read(src).xml)
-            editor = Editor(xml, name=src.name)
+            editor = Editor(src, name=src.name)
 
             it = self.sampler.sample(
                 n=self.n,
@@ -380,7 +377,7 @@ class BatchEditor:
                 scale=editor.scale,  # type: ignore[arg-type]
             )
             for is_first, _, sample in mi.mark_ends(it):
-                editor = Editor(xml, name=src.name, log_excluded=20 if is_first else 10)
+                editor = Editor(src, name=src.name, log_excluded=20 if is_first else 10)
                 editor.edit(sample)
 
                 dst = self.output / src.stem if self.subdir else self.output
