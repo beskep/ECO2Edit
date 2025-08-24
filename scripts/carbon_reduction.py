@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import dataclasses as dc
+import enum
 import functools
 import itertools
 import math
 import re
 import shutil
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
 
@@ -17,6 +19,7 @@ import polars as pl
 from loguru import logger
 from lxml import etree
 from rich.logging import RichHandler
+from tqdm import TqdmExperimentalWarning
 from tqdm.rich import tqdm
 
 from eco2edit import report
@@ -100,6 +103,14 @@ PV_GEN_PER_AREA: dict[str, dict[Region, float]] = {
 }
 
 
+class Building(enum.StrEnum):
+    RESIDENTIAL = 'residential'
+    NON_RESIDENTIAL = 'non-residential'
+
+    R = RESIDENTIAL
+    NR = NON_RESIDENTIAL
+
+
 def _dict(obj: _Element, /) -> dict[str, str | None]:
     return {str(e.tag): e.text for e in obj.iterchildren()}
 
@@ -123,6 +134,7 @@ def _grade(value: Grade, /):
 class HeatingSystem:
     type: HeatingType
     source: EnergySource
+    boiler_capacity: float
 
     @classmethod
     def create(cls, element: _Element):
@@ -150,7 +162,11 @@ class HeatingSystem:
                 msg = 'Unknown heating system'
                 raise EditorError(msg, _dict(element))
 
-        return cls(*args)
+        boiler_capacity = (
+            float(element.findtext('보일러정격출력', 0)) if args[0] == '보일러' else 0
+        )
+
+        return cls(*args, boiler_capacity=boiler_capacity)
 
 
 @dc.dataclass(frozen=True)
@@ -213,16 +229,18 @@ class Editor(Eco2Editor):
         self,
         case: Case,
         setting: pl.DataFrame,
+        bldg: Building,
         pv: float = 0,
         bipv: float = 0,
     ):
         if pv == 'required':
             msg = f'{pv=}'
-            raise ValueError(msg)
+            raise EditorError(msg)
 
         super().__init__(case.src)
         self.case = case
         self.setting = setting
+        self.bldg = bldg
         self.pv: float = pv
         self.bipv: float = bipv
 
@@ -239,7 +257,10 @@ class Editor(Eco2Editor):
         }
 
     def _value(self, expr: pl.Expr):
-        return self.setting.row(by_predicate=expr)[-1]
+        try:
+            return self.setting.row(by_predicate=expr)[-1]
+        except pl.exceptions.TooManyRowsReturnedError as e:
+            raise EditorError(self.setting) from e
 
     def connected_renewable(self, equipment: _Element):
         code = equipment.findtext('연결된시스템')
@@ -299,9 +320,13 @@ class Editor(Eco2Editor):
     def _edit_heating_equipment(
         self,
         element: _Element,
-        boiler_control_threshold: float = 100,
+        boiler_control_threshold: float | None = None,
     ):
         heating = HeatingSystem.create(element)
+        boiler_control_threshold = (
+            boiler_control_threshold  # fmt
+            or (100 if self.bldg == Building.NON_RESIDENTIAL else math.inf)
+        )
 
         # 효율
         part = (
@@ -333,11 +358,7 @@ class Editor(Eco2Editor):
         # 펌프제어
         if (
             heating.type == '지역난방'  # fmt
-            or (
-                heating.type == '보일러'
-                and float(element.findtext('보일러정격출력', 0))  # kW
-                >= boiler_control_threshold
-            )
+            or (heating.boiler_capacity >= boiler_control_threshold)
         ):
             control = self._value(
                 (self.category == '난방제어') & (self.part == '펌프제어')
@@ -428,7 +449,7 @@ class Editor(Eco2Editor):
     def max_pv_area(self):
         if self.xml.area.building is None:
             msg = '건축면적 해석 불가'
-            raise ValueError(msg)
+            raise EditorError(msg)
 
         ratio = float(self._value(self.part == '최대 태양광 모듈면적비'))
         return round(self.xml.area.building * ratio, 2)
@@ -548,8 +569,12 @@ def filename(src: Path, dst: Path, *, name: bool = False):
 @cyclopts.Parameter(name='*')
 @dc.dataclass
 class BatchEditor:
+    bldg: Building
     src: Path
-    dst: Path
+    dst: Path | None = None
+
+    _: dc.KW_ONLY
+
     pv: PVArea | float = 'zero'
     xml: bool = False
     required_pv: str | Path | None = 'Required-PV.parquet'
@@ -562,11 +587,14 @@ class BatchEditor:
         root = Path(__file__).parents[1]
         index = ['category', 'part', 'region', 'source', 'scale']
         return (
-            # NOTE 주거 추가 시 수정
-            pl.scan_csv(root / 'config/CarbonReduction-NonResidential.csv')
+            pl.scan_csv(root / f'config/carbon-reduction/{self.bldg}.csv')
             .unpivot(index=index, variable_name='grade')
             .collect()
         )
+
+    @property
+    def output(self):
+        return self.dst or self.src.parent / f'output-pv-{self.pv}'
 
     def filter_setting(self, scale: str, region: Region, grade: Grade):
         return self.settings.filter(
@@ -602,7 +630,7 @@ class BatchEditor:
             case 'required':
                 if self._required_pv is None:
                     msg = '요구 PV 면적이 입력되지 않음.'
-                    raise ValueError(msg)
+                    raise EditorError(msg)
 
                 grade = self._BASE_INDEX if case.grade is None else case.grade
                 row = self._required_pv.row(
@@ -612,7 +640,7 @@ class BatchEditor:
                 )
                 return float(row['PV']), float(row['BIPV'])
             case _:
-                raise ValueError(self.pv)
+                raise EditorError(self.pv)
 
     @functools.cached_property
     def sources(self):
@@ -630,13 +658,15 @@ class BatchEditor:
         )
 
     def cases(self):
-        pattern = re.compile(r'^\w(\-C\d)?\-(A\d)\-\w\-\d+')
+        pattern = re.compile(r'^\w(-(?P<s1>C\d))?\-(?P<s2>A\d)\-\w\-\d+')
 
         for src, region, grade in itertools.product(*self._cases()):
             if (m := pattern.search(src.stem)) is None:
-                raise ValueError(src.name)
+                raise EditorError(src.name)
 
-            scale = m.group(2)
+            if (scale := m.group('s1') or m.group('s2')) is None:
+                raise EditorError(src.name)
+
             yield Case(src=src, scale=scale, region=region, grade=grade)
 
     def edit(self, case: Case):
@@ -644,11 +674,10 @@ class BatchEditor:
             scale=case.scale, region=case.region, grade=case.grade
         )
 
-        if not (setting).height:
-            raise ValueError(case)
+        if not setting.height:
+            raise EditorError(case)
 
         pv, bipv = self._pv_area(case)
-        editor = Editor(case, setting, pv=max(0, pv), bipv=bipv)
 
         if pv < 0:
             suffix = 'PvNotRequired'
@@ -657,23 +686,34 @@ class BatchEditor:
         else:
             suffix = 'PV'
 
-        path = self.dst / f'{case}-PV-{self.pv}-{suffix}.tpl'
+        path = self.output / f'{case}-PV-{self.pv}-{suffix}.tpl'
         if path.exists():
             return
+
+        editor = Editor(
+            case=case,
+            setting=setting,
+            bldg=self.bldg,
+            pv=max(0, pv),
+            bipv=bipv,
+        )
 
         try:
             editor.edit()
         except EditorError as e:
-            logger.error(repr(e))
-            raise
+            logger.error('{} {}', case, repr(e))
+            return
 
         editor.write(path)
         if self.xml:
             editor.xml.write(path.with_suffix('.xml'))
 
     def execute(self):
+        self.output.mkdir(exist_ok=True)
+
         total = math.prod(len(x) for x in self._cases())
-        for case in tqdm(self.cases(), total=total):
+        warnings.simplefilter('ignore', TqdmExperimentalWarning)
+        for case in tqdm(self.cases(), total=total, miniters=1, smoothing=0.9):
             self.edit(case)
 
 
@@ -692,21 +732,22 @@ def gen_per_area(editor: BatchEditor, *, area: tuple[float, ...] = (0, 10, 100))
         setting = editor.filter_setting(
             scale=case.scale, region=case.region, grade=case.grade
         )
+        kwargs = {'case': case, 'setting': setting, 'bldg': editor.bldg}
 
-        pv = editor.dst / f'{case}-PV-{a}.tpl'
-        Editor(case=case, setting=setting, pv=a).edit().write(pv)
+        pv = editor.output / f'{case}-PV-{a}.tpl'
+        Editor(**kwargs, pv=a).edit().write(pv)
 
-        bipv = editor.dst / f'{case}-BIPV-{a}.tpl'
-        Editor(case=case, setting=setting, pv=0, bipv=a).edit().write(bipv)
+        bipv = editor.output / f'{case}-BIPV-{a}.tpl'
+        Editor(**kwargs, pv=0, bipv=a).edit().write(bipv)
 
 
 @cyclopts.Parameter(name='*')
 @dc.dataclass(frozen=True)
 class RequiredPV:
     src: Path  # PV Zero Reports
-    dst: Path | None
-    setting: Path = Path('config/CarbonReduction-NonResidential.csv')
-    safety: float = 0.0005  # 안전률 (요구 자립률에 더함)
+    dst: Path | None = None
+    setting: Path = Path('config/carbon-reduction/non-residential.csv')
+    safety: float = 0.001  # 안전률 (요구 자립률에 더함)
     xls_suffix: str = ' 계산결과'
 
     @functools.cached_property
@@ -714,11 +755,13 @@ class RequiredPV:
         return self.dst or self.src.parent
 
     def _read_raw(self):
-        tpls = tuple(self.src.glob('*.tpl'))
+        tpls = tuple(x for x in self.src.glob('*') if x.suffix in {'.tpl', '.tplx'})
         if (
             sorted(x.stem for x in tpls)  # fmt
             != sorted(
-                x.stem.removesuffix(self.xls_suffix) for x in self.src.glob('*.xls')
+                x.stem.removesuffix(self.xls_suffix)
+                for x in self.src.glob('*.xls')
+                if '결과그래프' not in x.name
             )
         ):
             raise AssertionError
