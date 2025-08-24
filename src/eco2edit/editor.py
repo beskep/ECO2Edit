@@ -166,7 +166,7 @@ class Eco2Xml(_Eco2Xml):
     ):
         path = '일사에너지투과율'
 
-        if not update_zero and (float(window.findtext(path, NOT_FOUND) or 0) == 0):
+        if not update_zero and (float(window.findtext(path) or 0) == 0):
             # '외부창'의 원래 SHGC가 0인 경우 (투과율 없는 문) 값을 수정하지 않음.
             return
 
@@ -174,17 +174,16 @@ class Eco2Xml(_Eco2Xml):
         set_child_text(window, path, shgc)
 
         # 전체 투과율 수정
-        balcony = float(window.findtext('발코니투과율', NOT_FOUND) or 0)
-        total = f'{balcony * shgc:.4f}' if balcony else str(shgc)
-        set_child_text(window, '투과율', total)
+        if balcony := float(window.findtext('발코니투과율') or 0):
+            total = f'{balcony * shgc:.4f}' if balcony else str(shgc)
+            set_child_text(window, '투과율', total)
 
-        # tbl_myoun 투과율 수정
-        # XXX 테스트 필요
-        pcode = window.findtext('code')
-        assert pcode is not None
-        for e in self.iterfind('tbl_myoun'):
-            if e.findtext('열관류율2') == pcode:
-                set_child_text(e, '투과율', total)
+            # tbl_myoun 투과율 수정
+            pcode = window.findtext('code')
+            assert pcode is not None
+            for e in self.iterfind('tbl_myoun'):
+                if e.findtext('열관류율2') == pcode:
+                    set_child_text(e, '투과율', total)
 
 
 class Eco2Editor:
@@ -218,7 +217,6 @@ class Eco2Editor:
             if w.findtext('code') == '0':
                 continue
 
-            logger.trace('{} {}', surface_type, w.findtext('설명'))
             self.xml.set_wall_uvalue(wall=w, uvalue=uvalue)
 
         return self
