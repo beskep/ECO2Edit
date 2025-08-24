@@ -17,7 +17,6 @@ if TYPE_CHECKING:
 
 Level = Literal['debug', 'info', 'warning', 'error', 'raise']
 
-NOT_FOUND = '__NOT_FOUND__'  # _Element.findtext 기본 값
 CUSTOM_LAYER = """
 <tbl_ykdetail>
   <pcode>0000</pcode>
@@ -64,8 +63,11 @@ class Area:
 
     @staticmethod
     def _value(element: _Element, path: str):
+        if (text := element.findtext(path)) is None:
+            raise ElementNotFoundError(element, path)
+
         try:
-            return float(element.findtext(path, NOT_FOUND).replace(',', ''))
+            return float(text.replace(',', ''))
         except ValueError:
             return None
 
@@ -102,8 +104,8 @@ class Eco2Xml(_Eco2Xml):
     @functools.cached_property
     def area(self):
         if (desc := self.ds.find('tbl_Desc')) is None:
-            msg = f'tbl_Desc not found in {self.ds}'
-            raise ValueError(msg)
+            msg = 'tbl_Desc'
+            raise ElementNotFoundError(msg)
 
         return Area.create(desc)
 
@@ -112,7 +114,7 @@ class Eco2Xml(_Eco2Xml):
             t = self.SURFACE_TYPE.index(t)
 
         for e in self.iterfind('tbl_yk'):
-            if int(e.findtext('면형태', NOT_FOUND)) == t:
+            if int(e.findtext('면형태', -1)) == t:
                 yield e
 
     def layers(self, pcode: str | None):
