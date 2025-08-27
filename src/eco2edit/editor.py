@@ -61,6 +61,14 @@ class Area:
     floor: float | None
     """연면적"""
 
+    raw: dict[str, str | None]
+
+    KEY: ClassVar[dict[str, str]] = {
+        'site': 'buildm21',
+        'building': 'buildm22',
+        'floor': 'buildm23',
+    }
+
     @staticmethod
     def _value(element: _Element, path: str):
         if (text := element.findtext(path)) is None:
@@ -74,9 +82,8 @@ class Area:
     @classmethod
     def create(cls, desc: _Element):
         return cls(
-            site=cls._value(desc, 'buildm21'),
-            building=cls._value(desc, 'buildm22'),
-            floor=cls._value(desc, 'buildm23'),
+            **{k: cls._value(desc, p) for k, p in cls.KEY.items()},
+            raw={k: desc.findtext(p) for k, p in cls.KEY.items()},
         )
 
 
