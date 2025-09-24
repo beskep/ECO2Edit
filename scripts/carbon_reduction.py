@@ -9,7 +9,6 @@ import itertools
 import math
 import re
 import shutil
-import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
 
@@ -19,11 +18,10 @@ import polars as pl
 from loguru import logger
 from lxml import etree
 from rich.logging import RichHandler
-from tqdm import TqdmExperimentalWarning
-from tqdm.rich import tqdm
 
 from eco2edit import report
 from eco2edit.editor import Eco2Editor, Eco2Xml, EditorError, set_child_text
+from eco2edit.tqdmr import tqdmr as tqdm
 
 if TYPE_CHECKING:
     from lxml.etree import _Element
@@ -712,7 +710,6 @@ class BatchEditor:
         self.output.mkdir(exist_ok=True)
 
         total = math.prod(len(x) for x in self._cases())
-        warnings.simplefilter('ignore', TqdmExperimentalWarning)
         for case in tqdm(self.cases(), total=total, miniters=1, smoothing=0.9):
             self.edit(case)
 
