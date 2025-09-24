@@ -741,31 +741,40 @@ def gen_per_area(editor: BatchEditor, *, area: tuple[float, ...] = (0, 10, 100))
 @cyclopts.Parameter(name='*')
 @dc.dataclass(frozen=True)
 class RequiredPV:
-    src: Path  # PV Zero Reports
+    bldg: Building
+    src: Path  # PV Zero
     dst: Path | None = None
-    setting: Path = Path('config/carbon-reduction/non-residential.csv')
+
     safety: float = 0.001  # 안전률 (요구 자립률에 더함)
-    xls_suffix: str = ' 계산결과'
 
     @functools.cached_property
     def output(self):
         return self.dst or self.src.parent
 
+    @property
+    def setting(self):
+        return Path(f'config/carbon-reduction/{self.bldg}.csv')
+
     def _read_raw(self):
         tpls = tuple(x for x in self.src.glob('*') if x.suffix in {'.tpl', '.tplx'})
-        if (
-            sorted(x.stem for x in tpls)  # fmt
-            != sorted(
-                x.stem.removesuffix(self.xls_suffix)
+        if not tpls:
+            raise FileNotFoundError(self.src / '*.tpl[x]')
+
+        xls_suffix = ' 계산결과'
+        if diff := set.symmetric_difference(
+            {x.stem for x in tpls},
+            {
+                x.stem.removesuffix(xls_suffix)
                 for x in self.src.glob('*.xls')
                 if '결과그래프' not in x.name
-            )
+            },
         ):
-            raise AssertionError
+            # tpl과 계산결과 xls가 1:1 대응되는지 확인
+            raise AssertionError(sorted(diff))
 
         for tpl in tqdm(tpls):
             area = Eco2Xml.read(tpl).area.building
-            xls = tpl.parent / f'{tpl.stem}{self.xls_suffix}.xls'
+            xls = tpl.parent / f'{tpl.stem}{xls_suffix}.xls'
             yield report.CalculationsReport(xls).data.select(
                 pl.lit(tpl.stem).alias('case'),
                 pl.lit(area).alias('건축면적'),
@@ -774,10 +783,10 @@ class RequiredPV:
 
     @functools.cached_property
     def raw(self):
-        cache = self.output / f'{self.src.name}.parquet'
+        cache = self.output / f'[cache][RequiredPV] {self.src.name}.parquet'
 
         if cache.exists():
-            return pl.read_parquet(cache)
+            return pl.read_parquet(cache, glob=False)
 
         raw = pl.concat(self._read_raw()).rename({'변수': 'variable', '합계': 'value'})
         raw.write_parquet(cache)
@@ -810,8 +819,9 @@ class RequiredPV:
             'value',
         )
 
+    @functools.cached_property
     def area_by_use(self):
-        # 냉난방급탕조명환기 면적
+        # 냉난방/급탕/조명/환기 면적
         pattern = r'^(?<variable>\w+)\((?<use>\w+)\)$'
         return (
             self.raw.filter(pl.col('variable').str.starts_with('사용면적'))
@@ -822,7 +832,7 @@ class RequiredPV:
     def elec_area(self):
         # 전력 생산량 보정 면적
         return (
-            pl.concat([self.consumption(), self.area_by_use()])
+            pl.concat([self.consumption(), self.area_by_use])
             .pivot('variable', index=['case', 'use'], values='value')
             .with_columns(
                 w=pl.when(pl.col('소요량') == 0)
@@ -833,6 +843,23 @@ class RequiredPV:
             .agg(pl.sum('소요량', 'w'))
             .select('case', pl.col('소요량').truediv('w').alias('보정면적'))
         )
+
+    def reference_area(self):
+        # 최대 PV 면적 산정을 위한 기준 면적
+        match self.bldg:
+            case Building.NON_RESIDENTIAL:
+                area = self.raw.select('case', '건축면적').unique()
+            case Building.RESIDENTIAL:
+                area = (
+                    (self.area_by_use)
+                    .filter(pl.col('use') == '난방')
+                    .select('case', pl.col('value').alias('난방면적'))
+                )
+            case _:
+                raise ValueError(self.bldg)
+
+        assert area.width == 2  # noqa: PLR2004
+        return area
 
     def __call__(self):
         # 면적당 생산, 소요, 자립률, 필요 PV 면적 계산
@@ -871,6 +898,8 @@ class RequiredPV:
         )
 
         max_ratio = dict(self.max_pv_ratio())
+        ref_area = self.reference_area()
+
         return (
             generation.join(self.elec_area(), on='case', how='left')
             .with_columns(ZEB=pl.col('case').str.extract(r'\-(Base|ZEB.)\-'))
@@ -918,12 +947,10 @@ class RequiredPV:
                 .replace_strict(max_ratio, return_dtype=pl.Float64)
                 .alias('최대면적비'),
             )
-            .join(
-                self.raw.select('case', '건축면적').unique(),
-                on='case',
-                how='left',
+            .join(ref_area, on='case', how='left', validate='1:1')
+            .with_columns(
+                (pl.col(ref_area.columns[1]) * pl.col('최대면적비')).alias('최대면적')
             )
-            .with_columns((pl.col('건축면적') * pl.col('최대면적비')).alias('최대면적'))
             .with_columns(
                 pl.min_horizontal('요구PV면적', '최대면적').alias('PV면적'),
                 pl.max_horizontal(
@@ -938,11 +965,11 @@ class RequiredPV:
 
 
 @app.command
-def required_pv(required_pv: RequiredPV):
-    pv = required_pv()
+def required_pv(pv: RequiredPV):
+    data = pv()
 
-    pv.write_parquet(required_pv.output / 'Required-PV.parquet')
-    pv.write_excel(required_pv.output / 'Required-PV.xlsx', column_widths=100)
+    data.write_parquet(pv.output / 'Required-PV.parquet')
+    data.write_excel(pv.output / 'Required-PV.xlsx', column_widths=100)
 
 
 @app.command
@@ -977,8 +1004,8 @@ def pv_bldg_area(root: Path, threshold: float = 0.901):
             continue
 
         pv_area = float(pv.findtext('태양광모듈면적', 'ERROR'))
-        r = pv_area / area
-        if r >= threshold:
+
+        if (r := pv_area / area) >= threshold:
             logger.warning('r={} | case={}', r, path.name)
 
 
