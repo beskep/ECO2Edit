@@ -710,7 +710,7 @@ class BatchEditor:
         self.output.mkdir(exist_ok=True)
 
         total = math.prod(len(x) for x in self._cases())
-        for case in tqdm(self.cases(), total=total, miniters=1, smoothing=0.9):
+        for case in tqdm(self.cases(), total=total):
             self.edit(case)
 
 
