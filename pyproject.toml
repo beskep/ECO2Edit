@@ -7,6 +7,7 @@ readme = "README.md"
 requires-python = ">= 3.12"
 dependencies = [
     "eco2 @ git+https://github.com/beskep/ECO2",
+    "logly>=0.1.6",
     "more-itertools>=10.6.0",
     "pydash>=8.0.5",
     "scipy>=1.15.2",
@@ -53,6 +54,9 @@ future-annotations = true
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
+
+[tool.ruff.lint.pydoclint]
+ignore-one-line-docstrings = true
 
 [tool.mypy]
 disable_error_code = ["import-untyped", "import", "var-annotated"]

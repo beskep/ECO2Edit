@@ -57,7 +57,7 @@ class RateColumn(UnitScaleColumn):
         self.unit = unit
 
     def render(self, task: Task) -> Text:
-        """Show data transfer speed."""  # noqa: DOC201
+        """Show data transfer speed."""
         speed = task.fields['rate']
         if task.fields['elapsed'] and speed is None:
             speed = task.completed / task.fields['elapsed']
