@@ -1,0 +1,57 @@
+[cli]
+root = 'D:\wd\ECO2\PIM'
+
+[cli.condition1.basic]
+root = 'D:\wd\ECO2\PIM\02.condition1.basic'
+
+[cli.condition1.renewable]
+root = 'D:\wd\ECO2\PIM\03.condition1.renewable'
+
+[design]
+light_density = 5.0
+shgc = 0.29            # 외부창에만 반영
+boiler_efficiency = 92
+
+[design.heat_pump]
+individual = [6.35, 2.667]
+central = [5.18, 0]
+
+[design.uvalue]
+'외벽(벽체)' = 0.12
+'외벽(지붕)' = 0.105
+'외벽(바닥)' = 0.140
+'내벽(벽체)' = 0.17
+'내벽(지붕)' = 0.147
+'내벽(바닥)' = 0.203
+'간벽' = -1        # 없음
+'외부창' = 1.0
+'내부창' = 1.0
+'지중벽' = -1       # 없음
+
+[design.heat_recovery]
+'0.6' = { 'heat' = 0.7, 'cool' = 0.45 }
+'1.0' = { 'heat' = 0.74, 'cool' = 0.57 }
+
+[renewable]
+pv = [
+    { slope = '45도', azimuth = '남', efficient = '단결정', mount = '후면통풍' },
+    { slope = '45도', azimuth = '남', efficient = 0.215, mount = '후면통풍' },
+    { slope = '수직', azimuth = '남', efficient = '단결정', mount = '후면통풍' },
+    { slope = '수직', azimuth = '남', efficient = 0.16, mount = '후면통풍' },
+    { slope = '수직', azimuth = '동', efficient = '단결정', mount = '후면통풍' },
+    { slope = '수직', azimuth = '동', efficient = 0.16, mount = '후면통풍' },
+    { slope = '수직', azimuth = '서', efficient = '단결정', mount = '후면통풍' },
+    { slope = '수직', azimuth = '서', efficient = 0.16, mount = '후면통풍' },
+    { slope = '수평', azimuth = '', efficient = '단결정', mount = '후면통풍' },
+    { slope = '수평', azimuth = '', efficient = 0.16, mount = '후면통풍' },
+    { slope = '45도', azimuth = '남', efficient = '단결정', mount = '밀착형' },
+    { slope = '45도', azimuth = '남', efficient = 0.215, mount = '밀착형' },
+    { slope = '수직', azimuth = '남', efficient = '단결정', mount = '밀착형' },
+    { slope = '수직', azimuth = '남', efficient = 0.16, mount = '밀착형' },
+    { slope = '수직', azimuth = '동', efficient = '단결정', mount = '밀착형' },
+    { slope = '수직', azimuth = '동', efficient = 0.16, mount = '밀착형' },
+    { slope = '수직', azimuth = '서', efficient = '단결정', mount = '밀착형' },
+    { slope = '수직', azimuth = '서', efficient = 0.16, mount = '밀착형' },
+    { slope = '수평', azimuth = '', efficient = '단결정', mount = '밀착형' },
+    { slope = '수평', azimuth = '', efficient = 0.16, mount = '밀착형' },
+]
